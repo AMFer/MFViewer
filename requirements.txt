@@ -1,0 +1,15 @@
+# GUI Framework
+PyQt6>=6.6.0
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Plotting
+pyqtgraph>=0.13.0
+
+# Data Export
+openpyxl>=3.1.0
+
+# Configuration
+PyYAML>=6.0
