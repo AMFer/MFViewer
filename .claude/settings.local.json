@@ -12,7 +12,27 @@
       "Bash(\"venv/Scripts/python.exe\":*)",
       "Bash(taskkill:*)",
       "Bash(\"venv/Scripts/python.exe\" run.py)",
-      "Bash(\"venv/Scripts/python.exe\" run.py \"C:\\\\Users\\\\gf006\\\\Documents\\\\Haltech\\\\Nexus Maps and Data Logs\\\\RCR 599 Prototipo\\\\Logs\\\\2025-12-21_1127am_Log272.csv\")"
+      "Bash(\"venv/Scripts/python.exe\" run.py \"C:\\\\Users\\\\gf006\\\\Documents\\\\Haltech\\\\Nexus Maps and Data Logs\\\\RCR 599 Prototipo\\\\Logs\\\\2025-12-21_1127am_Log272.csv\")",
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile:*)",
+      "Bash(\"venv/Scripts/python.exe\" test_fuel_pressure.py)",
+      "Bash(awk:*)",
+      "Bash(\"venv/Scripts/python.exe\" test_columns.py)",
+      "Bash(\"venv/Scripts/python.exe\" test_column_mapping.py)",
+      "Bash(\"venv/Scripts/python.exe\" test_fuel_conversion.py)",
+      "Bash(\"venv/Scripts/python.exe\" test_haltech_formula.py)",
+      "Bash(\"venv/Scripts/python.exe\" test_fix.py)",
+      "Bash(\"venv/Scripts/python.exe\" test_forward_func.py)",
+      "Bash(\"venv/Scripts/python.exe\" -c \"from mfviewer.utils.units import UnitsManager; u = UnitsManager\\(\\); print\\(''kPa conversions:'', u.unit_conversions.get\\(''kPa''\\)\\); print\\(''Default prefs:'', u.default_preferences\\)\")",
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/utils/units.py)",
+      "Bash(\"venv/Scripts/python.exe\" verify_conversion.py)",
+      "Bash(\"venv/Scripts/python.exe\" debug_plotwidget.py)",
+      "Bash(\"venv/Scripts/python.exe\" show_correct_values.py)",
+      "Bash(\"venv/Scripts/python.exe\" test_exact_gui_flow.py)",
+      "Bash(dir /s /b \"%USERPROFILE%\\\\.mfviewer\")",
+      "Bash(\"venv/Scripts/python.exe\" -c \"from mfviewer.utils.units import UnitsManager; import numpy as np; u = UnitsManager\\(\\); print\\(''Testing with array:''\\); result = u.apply_channel_conversion\\(''Fuel Pressure'', np.array\\([4008.0]\\), ''Pressure''\\); print\\(''Input: 4008.0''\\); print\\(''Output:'', result[0]\\); print\\(''Expected: ~300''\\)\")",
+      "Bash(\"venv/Scripts/python.exe\" test_afr.py)",
+      "Bash(\"venv/Scripts/python.exe\" test_afr2.py)",
+      "Bash(\"venv/Scripts/python.exe\" test_wideband_data.py)"
     ]
   }
 }
