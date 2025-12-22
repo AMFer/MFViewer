@@ -270,9 +270,11 @@ class PlotContainer(QWidget):
         """
         self.telemetry = telemetry
 
-        # Clear existing plots
+        # Clear existing plots (force clear all, even the last one)
         for plot in self.plot_widgets[:]:
-            self._remove_plot(plot)
+            self.plot_widgets.remove(plot)
+            plot.setParent(None)
+            plot.deleteLater()
 
         # Set orientation
         orientation = Qt.Orientation.Horizontal if config.get('orientation', 'horizontal') == 'horizontal' else Qt.Orientation.Vertical
