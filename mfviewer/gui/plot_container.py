@@ -17,11 +17,12 @@ from mfviewer.data.parser import ChannelInfo, TelemetryData
 class PlotContainer(QWidget):
     """Container widget that holds multiple tiled plot widgets."""
 
-    def __init__(self, sync_callback=None):
+    def __init__(self, sync_callback=None, units_manager=None):
         super().__init__()
         self.plot_widgets: List[PlotWidget] = []
         self.telemetry: TelemetryData = None
         self.sync_callback = sync_callback  # Callback to sync all plots globally
+        self.units_manager = units_manager  # Units manager for conversions
         self._setup_ui()
 
     def _setup_ui(self):
@@ -159,7 +160,7 @@ class PlotContainer(QWidget):
 
     def _add_plot(self):
         """Add a new plot widget to the container."""
-        plot_widget = PlotWidget()
+        plot_widget = PlotWidget(units_manager=self.units_manager)
 
         # If we have telemetry data, set it on the new plot
         if self.telemetry:
@@ -300,6 +301,11 @@ class PlotContainer(QWidget):
         """Clear all data from all plot widgets."""
         for plot in self.plot_widgets:
             plot.clear_all_plots()
+
+    def refresh_with_new_units(self):
+        """Refresh all plot widgets with new unit conversions."""
+        for plot in self.plot_widgets:
+            plot.refresh_with_new_units()
 
     def _on_cursor_moved(self, x_pos: float):
         """

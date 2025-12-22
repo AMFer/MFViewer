@@ -27,10 +27,11 @@ except ImportError:
 class PlotWidget(QWidget):
     """Widget for plotting telemetry data."""
 
-    def __init__(self):
+    def __init__(self, units_manager=None):
         super().__init__()
         self.telemetry: Optional[TelemetryData] = None
         self.plot_items: Dict[str, dict] = {}  # channel_name -> {plot_item, data_item}
+        self.units_manager = units_manager  # For unit conversions and display
 
         # Exclude outliers setting (default: True)
         self.exclude_outliers = True
@@ -62,7 +63,7 @@ class PlotWidget(QWidget):
         self.plot_widget.setBackground('#1e1e1e')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self.plot_widget.setLabel('bottom', 'Time', units='s', color='#dcdcdc')
-        self.plot_widget.setLabel('left', 'Value', color='#dcdcdc')
+        # No Y-axis label to save space - units shown in legend instead
 
         # Enable drag and drop on the plot widget itself and install event filter
         self.plot_widget.setAcceptDrops(True)
@@ -200,6 +201,11 @@ class PlotWidget(QWidget):
         # Get time data (index)
         time_data = data_series.index.to_numpy()
         values = data_series.to_numpy()
+
+        # Apply unit conversions if units_manager is available
+        if self.units_manager:
+            # Use the channel's data_type from the log file header
+            values = self.units_manager.apply_channel_conversion(channel.name, values, channel.data_type)
 
         # Remove NaN values for cleaner plotting
         mask = ~np.isnan(values)
@@ -351,6 +357,66 @@ class PlotWidget(QWidget):
         self.cursor_active = False
         self.cursor_dragging = False
 
+    def refresh_with_new_units(self):
+        """Refresh all plotted channels with new unit conversions."""
+        if not self.telemetry or not self.plot_items:
+            return
+
+        # Store current channels and cursor position
+        channels_to_replot = [(plot_info['channel'], plot_info['color'])
+                              for plot_info in self.plot_items.values()]
+        cursor_pos = self.cursor_x_position
+
+        # Clear all plots
+        self.clear_all_plots()
+
+        # Re-add all channels with new unit conversions
+        for channel, original_color in channels_to_replot:
+            # Get channel data
+            data_series = self.telemetry.get_channel_data(channel.name)
+            if data_series is None:
+                continue
+
+            # Get time data (index)
+            time_data = data_series.index.to_numpy()
+            values = data_series.to_numpy()
+
+            # Apply unit conversions if units_manager is available
+            if self.units_manager:
+                # Use the channel's data_type from the log file header
+                values = self.units_manager.apply_channel_conversion(channel.name, values, channel.data_type)
+
+            # Remove NaN values for cleaner plotting
+            mask = ~np.isnan(values)
+            time_data = time_data[mask]
+            values = values[mask]
+
+            if len(time_data) == 0:
+                continue
+
+            # Add plot item with original color
+            pen = pg.mkPen(color=original_color, width=2)
+            plot_item = self.plot_widget.plot(
+                time_data,
+                values,
+                pen=pen,
+                name=channel.name
+            )
+
+            # Store reference
+            self.plot_items[channel.name] = {
+                'plot_item': plot_item,
+                'channel': channel,
+                'color': original_color
+            }
+
+        # Auto-range to fit all data
+        self._auto_scale()
+
+        # Restore cursor position if it was active
+        if cursor_pos is not None and self.cursor_active:
+            self.set_cursor_position(cursor_pos)
+
     def dragEnterEvent(self, event):
         """Handle drag enter event."""
         if event.mimeData().hasText():
@@ -453,19 +519,30 @@ class PlotWidget(QWidget):
         for sample, label in self.legend.items:
             # Find the channel name from the current label text
             channel_name = label.text.split(':')[0].strip()
+            # Remove units if present (e.g., "RPM (RPM)" -> "RPM")
+            if ' (' in channel_name:
+                channel_name = channel_name.split(' (')[0].strip()
 
             if channel_name in self.plot_items:
                 plot_info = self.plot_items[channel_name]
                 plot_item = plot_info['plot_item']
+                channel = plot_info['channel']
 
                 # Get value at cursor position
                 value_str = self._get_value_at_position(plot_item, x_pos)
 
+                # Get unit for display (using channel type from log file)
+                unit_str = ''
+                if self.units_manager:
+                    unit = self.units_manager.get_unit(channel_name, use_preference=True, channel_type=channel.data_type)
+                    if unit:
+                        unit_str = f" {unit}"
+
                 # Update label text
                 if value_str:
-                    label.setText(f"{channel_name}: {value_str}")
+                    label.setText(f"{channel_name}: {value_str}{unit_str}")
                 else:
-                    label.setText(channel_name)
+                    label.setText(f"{channel_name}{unit_str}")
 
     def _get_value_at_position(self, plot_item, x_pos: float) -> Optional[str]:
         """

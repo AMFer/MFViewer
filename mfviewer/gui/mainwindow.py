@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QTabWidget, QFileDialog, QMessageBox,
     QStatusBar, QToolBar, QTreeWidget, QTreeWidgetItem,
-    QLabel, QPushButton, QInputDialog, QMenu
+    QLabel, QPushButton, QInputDialog, QMenu, QDialog
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction, QKeySequence, QPalette, QColor, QCloseEvent
@@ -17,7 +17,9 @@ from PyQt6.QtGui import QAction, QKeySequence, QPalette, QColor, QCloseEvent
 from mfviewer.data.parser import MFLogParser, TelemetryData
 from mfviewer.gui.plot_widget import PlotWidget
 from mfviewer.gui.plot_container import PlotContainer
+from mfviewer.gui.preferences_dialog import PreferencesDialog
 from mfviewer.utils.config import TabConfiguration
+from mfviewer.utils.units import UnitsManager
 
 
 class ChannelTreeWidget(QTreeWidget):
@@ -55,6 +57,10 @@ class MainWindow(QMainWindow):
         self.plot_tabs: list = []  # Track all plot tab widgets
         self.tab_counter: int = 1  # Counter for naming new tabs
         self.master_viewbox = None  # Master viewbox for X-axis synchronization
+
+        # Initialize units manager
+        self.units_manager = UnitsManager()
+        self._load_unit_preferences()
 
         self.setWindowTitle("MFViewer - Motorsports Fusion Telemetry Viewer")
         self.setMinimumSize(1200, 800)
@@ -211,6 +217,32 @@ class MainWindow(QMainWindow):
             QSplitter::handle {
                 background-color: #3e3e42;
             }
+            QMessageBox {
+                background-color: #1e1e1e;
+            }
+            QMessageBox QLabel {
+                color: #dcdcdc;
+            }
+            QFileDialog {
+                background-color: #1e1e1e;
+                color: #dcdcdc;
+            }
+            QFileDialog QTreeView {
+                background-color: #252526;
+                color: #dcdcdc;
+                border: 1px solid #3e3e42;
+            }
+            QFileDialog QListView {
+                background-color: #252526;
+                color: #dcdcdc;
+                border: 1px solid #3e3e42;
+            }
+            QFileDialog QLineEdit {
+                background-color: #3c3c3c;
+                color: #dcdcdc;
+                border: 1px solid #3e3e42;
+                padding: 4px;
+            }
         """)
 
     def _setup_ui(self):
@@ -335,6 +367,14 @@ class MainWindow(QMainWindow):
         reset_zoom_action = QAction("&Reset Zoom", self)
         reset_zoom_action.setShortcut(QKeySequence("Ctrl+0"))
         view_menu.addAction(reset_zoom_action)
+
+        # Tools menu
+        tools_menu = menubar.addMenu("&Tools")
+
+        preferences_action = QAction("&Preferences...", self)
+        preferences_action.setShortcut(QKeySequence("Ctrl+,"))
+        preferences_action.triggered.connect(self._show_preferences)
+        tools_menu.addAction(preferences_action)
 
         # Help menu
         help_menu = menubar.addMenu("&Help")
@@ -463,8 +503,11 @@ class MainWindow(QMainWindow):
 
     def _create_new_plot_tab(self):
         """Create a new plot tab."""
-        # Create new plot container with sync callback
-        plot_container = PlotContainer(sync_callback=self._synchronize_all_x_axes)
+        # Create new plot container with sync callback and units manager
+        plot_container = PlotContainer(
+            sync_callback=self._synchronize_all_x_axes,
+            units_manager=self.units_manager
+        )
 
         # Set cursor synchronization for all plots in this container
         self._setup_cursor_sync_for_container(plot_container)
@@ -505,12 +548,47 @@ class MainWindow(QMainWindow):
             return
 
         current_name = self.tab_widget.tabText(index)
-        new_name, ok = QInputDialog.getText(
-            self,
-            "Rename Tab",
-            "Enter new tab name:",
-            text=current_name
-        )
+
+        # Create input dialog with dark theme
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Rename Tab")
+        dialog.setLabelText("Enter new tab name:")
+        dialog.setTextValue(current_name)
+        dialog.setStyleSheet("""
+            QInputDialog {
+                background-color: #1e1e1e;
+            }
+            QLabel {
+                color: #dcdcdc;
+            }
+            QLineEdit {
+                background-color: #3c3c3c;
+                color: #dcdcdc;
+                border: 1px solid #3e3e42;
+                padding: 5px;
+                selection-background-color: #094771;
+            }
+            QLineEdit:focus {
+                border: 1px solid #007acc;
+            }
+            QPushButton {
+                background-color: #0e639c;
+                color: #ffffff;
+                border: none;
+                padding: 6px 16px;
+                border-radius: 2px;
+                min-width: 60px;
+            }
+            QPushButton:hover {
+                background-color: #1177bb;
+            }
+            QPushButton:pressed {
+                background-color: #007acc;
+            }
+        """)
+
+        ok = dialog.exec()
+        new_name = dialog.textValue()
 
         if ok and new_name:
             self.tab_widget.setTabText(index, new_name)
@@ -649,14 +727,17 @@ class MainWindow(QMainWindow):
             # Check if this is a new PlotContainer config or legacy PlotWidget
             if 'container_config' in tab_data:
                 # New format with PlotContainer
-                plot_container = PlotContainer(sync_callback=self._synchronize_all_x_axes)
+                plot_container = PlotContainer(
+                    sync_callback=self._synchronize_all_x_axes,
+                    units_manager=self.units_manager
+                )
                 self._setup_cursor_sync_for_container(plot_container)
                 self.plot_tabs.append(plot_container)
                 self.tab_widget.addTab(plot_container, tab_name)
                 plot_container.load_configuration(tab_data['container_config'], self.telemetry)
             else:
                 # Legacy format with single PlotWidget
-                plot_widget = PlotWidget()
+                plot_widget = PlotWidget(units_manager=self.units_manager)
                 self.plot_tabs.append(plot_widget)
                 self.tab_widget.addTab(plot_widget, tab_name)
 
@@ -725,14 +806,20 @@ class MainWindow(QMainWindow):
             # Check if this is a new PlotContainer config or legacy PlotWidget
             if 'container_config' in tab_data:
                 # New format with PlotContainer
-                plot_container = PlotContainer(sync_callback=self._synchronize_all_x_axes)
+                plot_container = PlotContainer(
+                    sync_callback=self._synchronize_all_x_axes,
+                    units_manager=self.units_manager
+                )
                 self._setup_cursor_sync_for_container(plot_container)
                 self.plot_tabs.append(plot_container)
                 self.tab_widget.addTab(plot_container, tab_name)
                 plot_container.load_configuration(tab_data['container_config'], self.telemetry)
             else:
                 # Legacy format - convert to PlotContainer with single plot
-                plot_container = PlotContainer(sync_callback=self._synchronize_all_x_axes)
+                plot_container = PlotContainer(
+                    sync_callback=self._synchronize_all_x_axes,
+                    units_manager=self.units_manager
+                )
                 self._setup_cursor_sync_for_container(plot_container)
                 self.plot_tabs.append(plot_container)
                 self.tab_widget.addTab(plot_container, tab_name)
@@ -858,3 +945,73 @@ class MainWindow(QMainWindow):
             "<p>A Python-based desktop application for viewing and analyzing "
             "telemetry log files.</p>"
         )
+
+    def _show_preferences(self):
+        """Show preferences dialog."""
+        dialog = PreferencesDialog(self.units_manager, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Apply new preferences
+            preferences = dialog.get_preferences()
+
+            # Update unit preferences
+            if 'units' in preferences:
+                self.units_manager.set_preferences(preferences['units'])
+
+            # Update Haltech conversion setting
+            if 'cancel_haltech_conversion' in preferences:
+                self.units_manager.cancel_haltech_conversion = preferences['cancel_haltech_conversion']
+
+            self._save_unit_preferences()
+
+            # Refresh all plots to apply new units
+            self._refresh_all_plots()
+
+            self.statusbar.showMessage("Preferences updated", 3000)
+
+    def _refresh_all_plots(self):
+        """Refresh all plots with new unit preferences."""
+        # Refresh all plot tabs with new unit conversions
+        for i in range(self.tab_widget.count()):
+            plot_tab = self.tab_widget.widget(i)
+
+            # Handle both PlotContainer and legacy PlotWidget
+            if isinstance(plot_tab, PlotContainer):
+                plot_tab.refresh_with_new_units()
+            elif isinstance(plot_tab, PlotWidget):
+                plot_tab.refresh_with_new_units()
+
+    def _load_unit_preferences(self):
+        """Load unit preferences from file."""
+        prefs_file = TabConfiguration.get_default_config_dir() / 'unit_preferences.json'
+        if prefs_file.exists():
+            try:
+                import json
+                with open(prefs_file, 'r') as f:
+                    data = json.load(f)
+
+                    # Support both old and new format
+                    if isinstance(data, dict) and 'units' in data:
+                        # New format
+                        self.units_manager.set_preferences(data.get('units', {}))
+                        self.units_manager.cancel_haltech_conversion = data.get('cancel_haltech_conversion', False)
+                    else:
+                        # Old format - just unit preferences
+                        self.units_manager.set_preferences(data)
+            except Exception as e:
+                print(f"Error loading unit preferences: {e}")
+
+    def _save_unit_preferences(self):
+        """Save unit preferences to file."""
+        prefs_file = TabConfiguration.get_default_config_dir() / 'unit_preferences.json'
+        prefs_file.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            import json
+            data = {
+                'units': self.units_manager.get_preferences(),
+                'cancel_haltech_conversion': self.units_manager.cancel_haltech_conversion
+            }
+            with open(prefs_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"Error saving unit preferences: {e}")
