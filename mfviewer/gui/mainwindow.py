@@ -465,6 +465,10 @@ class MainWindow(QMainWindow):
         """Create a new plot tab."""
         # Create new plot container with sync callback
         plot_container = PlotContainer(sync_callback=self._synchronize_all_x_axes)
+
+        # Set cursor synchronization for all plots in this container
+        self._setup_cursor_sync_for_container(plot_container)
+
         self.plot_tabs.append(plot_container)
 
         # Add to tab widget with a default name
@@ -646,6 +650,7 @@ class MainWindow(QMainWindow):
             if 'container_config' in tab_data:
                 # New format with PlotContainer
                 plot_container = PlotContainer(sync_callback=self._synchronize_all_x_axes)
+                self._setup_cursor_sync_for_container(plot_container)
                 self.plot_tabs.append(plot_container)
                 self.tab_widget.addTab(plot_container, tab_name)
                 plot_container.load_configuration(tab_data['container_config'], self.telemetry)
@@ -721,12 +726,14 @@ class MainWindow(QMainWindow):
             if 'container_config' in tab_data:
                 # New format with PlotContainer
                 plot_container = PlotContainer(sync_callback=self._synchronize_all_x_axes)
+                self._setup_cursor_sync_for_container(plot_container)
                 self.plot_tabs.append(plot_container)
                 self.tab_widget.addTab(plot_container, tab_name)
                 plot_container.load_configuration(tab_data['container_config'], self.telemetry)
             else:
                 # Legacy format - convert to PlotContainer with single plot
                 plot_container = PlotContainer(sync_callback=self._synchronize_all_x_axes)
+                self._setup_cursor_sync_for_container(plot_container)
                 self.plot_tabs.append(plot_container)
                 self.tab_widget.addTab(plot_container, tab_name)
 
@@ -795,14 +802,51 @@ class MainWindow(QMainWindow):
         if len(all_plot_widgets) < 2:
             return
 
-        # Use the first plot as the master
-        if not self.master_viewbox:
-            self.master_viewbox = all_plot_widgets[0].plot_widget.getViewBox()
+        # Always use the first plot as the master (reset if needed)
+        self.master_viewbox = all_plot_widgets[0].plot_widget.getViewBox()
 
         # Link all other plots to the master
         for plot_widget in all_plot_widgets[1:]:
             viewbox = plot_widget.plot_widget.getViewBox()
-            viewbox.setXLink(self.master_viewbox)
+            try:
+                viewbox.setXLink(self.master_viewbox)
+            except RuntimeError:
+                # ViewBox was deleted, skip it
+                pass
+
+    def _setup_cursor_sync_for_container(self, container: PlotContainer):
+        """
+        Set up cursor synchronization for a plot container.
+
+        Args:
+            container: PlotContainer to set up
+        """
+        # Store reference to MainWindow for global sync
+        def create_global_sync_callback():
+            def global_cursor_sync(x_pos: float):
+                # Update ALL plots in ALL tabs
+                for i in range(self.tab_widget.count()):
+                    widget = self.tab_widget.widget(i)
+                    if isinstance(widget, PlotContainer):
+                        for plot in widget.plot_widgets:
+                            # Temporarily disable cursor callback to avoid recursion
+                            original_callback = plot.cursor_callback
+                            plot.cursor_callback = None
+                            # Ensure cursor is active on all plots
+                            plot.cursor_active = True
+                            plot.set_cursor_position(x_pos)
+                            plot.cursor_callback = original_callback
+            return global_cursor_sync
+
+        # Replace the container's cursor moved handler
+        container._global_cursor_sync = create_global_sync_callback()
+
+        # Update the callback for existing plot widgets in this container
+        for plot_widget in container.plot_widgets:
+            plot_widget.cursor_callback = container._global_cursor_sync
+
+        # Override the container's _on_cursor_moved to use global sync
+        container._on_cursor_moved = lambda x_pos: container._global_cursor_sync(x_pos)
 
     def _show_about(self):
         """Show about dialog."""

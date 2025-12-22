@@ -38,6 +38,11 @@ class PlotWidget(QWidget):
         # Callback for removing this plot
         self.remove_callback = None
 
+        # Cursor synchronization
+        self.cursor_line = None
+        self.cursor_x_position = None
+        self.cursor_callback = None  # Callback to sync cursor across plots
+
         # Enable drag and drop
         self.setAcceptDrops(True)
 
@@ -87,10 +92,44 @@ class PlotWidget(QWidget):
         self.legend.scene().installEventFilter(self)
         self._last_click_pos = None
 
+        # Create cursor line (initially hidden)
+        self.cursor_line = pg.InfiniteLine(
+            pos=0,
+            angle=90,
+            pen=pg.mkPen(color='#ffff00', width=1, style=Qt.PenStyle.DashLine),
+            movable=False
+        )
+        self.cursor_line.setVisible(False)
+        self.plot_widget.addItem(self.cursor_line)
+
+        # Track if cursor is active and being dragged
+        self.cursor_active = False
+        self.cursor_dragging = False
+
+        # Install event filter on the plot widget to capture mouse events
+        self.plot_widget.viewport().installEventFilter(self)
+
         layout.addWidget(self.plot_widget)
 
     def eventFilter(self, obj, event):
-        """Filter events to detect double-clicks on legend items and handle drag/drop."""
+        """Filter events to detect double-clicks on legend items, handle drag/drop, and cursor dragging."""
+        # Handle mouse events on the plot viewport for cursor dragging
+        if obj == self.plot_widget.viewport():
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton and self.plot_items:
+                    self.cursor_dragging = True
+                    self.cursor_active = True
+                    self._update_cursor_from_mouse_event(event)
+                    return False  # Let the event propagate for pan/zoom
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self.cursor_dragging = False
+                    return False
+            elif event.type() == QEvent.Type.MouseMove:
+                if self.cursor_dragging and self.cursor_active and self.plot_items:
+                    self._update_cursor_from_mouse_event(event)
+                    return False  # Let the event propagate for pan/zoom
+
         # Handle legend double-click
         if event.type() == QEvent.Type.GraphicsSceneMouseDoubleClick:
             # Get the position in scene coordinates
@@ -298,6 +337,20 @@ class PlotWidget(QWidget):
         # Reinstall event filter for legend clicks
         self.legend.scene().installEventFilter(self)
 
+        # Re-add cursor line
+        self.cursor_line = pg.InfiniteLine(
+            pos=0,
+            angle=90,
+            pen=pg.mkPen(color='#ffff00', width=1, style=Qt.PenStyle.DashLine),
+            movable=False
+        )
+        self.cursor_line.setVisible(False)
+        self.plot_widget.addItem(self.cursor_line)
+
+        # Reset cursor active state
+        self.cursor_active = False
+        self.cursor_dragging = False
+
     def dragEnterEvent(self, event):
         """Handle drag enter event."""
         if event.mimeData().hasText():
@@ -337,3 +390,135 @@ class PlotWidget(QWidget):
             menu.addAction(remove_action)
 
         menu.exec(self.mapToGlobal(position))
+
+    def _update_cursor_from_mouse_event(self, event):
+        """
+        Update cursor position from a mouse event.
+
+        Args:
+            event: QMouseEvent from the viewport
+        """
+        # Get mouse position in widget coordinates
+        pos = event.pos()
+
+        # Convert to scene coordinates
+        scene_pos = self.plot_widget.mapToScene(pos)
+
+        # Get viewbox
+        vb = self.plot_widget.getViewBox()
+        if vb is None:
+            return
+
+        # Convert to data coordinates
+        mouse_point = vb.mapSceneToView(scene_pos)
+        x_pos = mouse_point.x()
+
+        # Update cursor position through callback
+        if self.cursor_callback:
+            self.cursor_callback(x_pos)
+        else:
+            self.set_cursor_position(x_pos)
+
+    def set_cursor_position(self, x_pos: float):
+        """
+        Set cursor position and update legend with values.
+
+        Args:
+            x_pos: X position for the cursor
+        """
+        if not self.plot_items:
+            return
+
+        self.cursor_x_position = x_pos
+
+        # Show and position cursor line
+        if self.cursor_line:
+            self.cursor_line.setPos(x_pos)
+            self.cursor_line.setVisible(True)
+
+        # Update legend with values at cursor position
+        self._update_legend_with_cursor_values(x_pos)
+
+    def _update_legend_with_cursor_values(self, x_pos: float):
+        """
+        Update legend to show values at cursor position.
+
+        Args:
+            x_pos: X position to read values from
+        """
+        if not self.legend:
+            return
+
+        # Update legend labels with values at cursor position
+        for sample, label in self.legend.items:
+            # Find the channel name from the current label text
+            channel_name = label.text.split(':')[0].strip()
+
+            if channel_name in self.plot_items:
+                plot_info = self.plot_items[channel_name]
+                plot_item = plot_info['plot_item']
+
+                # Get value at cursor position
+                value_str = self._get_value_at_position(plot_item, x_pos)
+
+                # Update label text
+                if value_str:
+                    label.setText(f"{channel_name}: {value_str}")
+                else:
+                    label.setText(channel_name)
+
+    def _get_value_at_position(self, plot_item, x_pos: float) -> Optional[str]:
+        """
+        Get interpolated value at a given x position.
+
+        Args:
+            plot_item: The plot item to get value from
+            x_pos: X position to interpolate value at
+
+        Returns:
+            Formatted value string or None
+        """
+        if plot_item.xData is None or plot_item.yData is None:
+            return None
+
+        x_data = plot_item.xData
+        y_data = plot_item.yData
+
+        if len(x_data) == 0 or len(y_data) == 0:
+            return None
+
+        # Find closest point or interpolate
+        # Check if x_pos is within data range
+        if x_pos < x_data[0] or x_pos > x_data[-1]:
+            return None
+
+        # Find the two nearest points for interpolation
+        idx = np.searchsorted(x_data, x_pos)
+
+        if idx == 0:
+            value = y_data[0]
+        elif idx >= len(x_data):
+            value = y_data[-1]
+        else:
+            # Linear interpolation
+            x0, x1 = x_data[idx - 1], x_data[idx]
+            y0, y1 = y_data[idx - 1], y_data[idx]
+
+            if x1 == x0:
+                value = y0
+            else:
+                # Interpolate
+                t = (x_pos - x0) / (x1 - x0)
+                value = y0 + t * (y1 - y0)
+
+        # Format value
+        if np.isnan(value):
+            return None
+
+        # Format to appropriate precision
+        if abs(value) >= 1000:
+            return f"{value:.1f}"
+        elif abs(value) >= 10:
+            return f"{value:.2f}"
+        else:
+            return f"{value:.3f}"

@@ -171,6 +171,13 @@ class PlotContainer(QWidget):
         # Set remove callback
         plot_widget.remove_callback = self._remove_plot
 
+        # Set cursor callback for synchronization
+        # Use global sync if available, otherwise use local sync
+        if hasattr(self, '_global_cursor_sync'):
+            plot_widget.cursor_callback = self._global_cursor_sync
+        else:
+            plot_widget.cursor_callback = self._on_cursor_moved
+
         self.plot_widgets.append(plot_widget)
         self.splitter.addWidget(plot_widget)
 
@@ -291,3 +298,23 @@ class PlotContainer(QWidget):
         """Clear all data from all plot widgets."""
         for plot in self.plot_widgets:
             plot.clear_all_plots()
+
+    def _on_cursor_moved(self, x_pos: float):
+        """
+        Handle cursor movement from one plot and synchronize to others.
+
+        Args:
+            x_pos: X position of the cursor
+        """
+        # Update cursor position in all plots in this container
+        for plot in self.plot_widgets:
+            # Temporarily disable cursor callback to avoid infinite recursion
+            original_callback = plot.cursor_callback
+            plot.cursor_callback = None
+            plot.set_cursor_position(x_pos)
+            plot.cursor_callback = original_callback
+
+        # Also notify global sync callback if available
+        if self.sync_callback:
+            # The sync_callback is for X-axis linking, we'd need a separate one for cursor
+            pass
