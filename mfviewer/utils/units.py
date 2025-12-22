@@ -73,6 +73,12 @@ class UnitsManager:
                 'L/hr': lambda x: x * 0.06,
                 'gal/hr': lambda x: x * 0.0158503,
             },
+            'λ': {  # AFR from Lambda
+                'λ': lambda x: x,
+                'AFR (Gas)': lambda x: x * 14.7,      # Gasoline stoichiometric ratio
+                'AFR (E85)': lambda x: x * 9.765,     # E85 stoichiometric ratio
+                'AFR (Methanol)': lambda x: x * 6.4,  # Methanol stoichiometric ratio
+            },
         }
 
         # Default unit preferences
@@ -84,6 +90,7 @@ class UnitsManager:
             'L': 'gal',  # Volume in gallons
             'cc': 'cc',  # Keep small volumes in cc
             'cc/min': 'L/hr',  # Flow rate in L/hr
+            'λ': 'λ',  # Lambda by default (can change to AFR)
         }
 
         self.load_haltech_units()
@@ -326,8 +333,32 @@ class UnitsManager:
                             inverse_func = self._parse_haltech_conversion(conversion)
                             if inverse_func:
                                 self.channel_inverse_conversions[channel] = inverse_func
+
+            # Add channel name aliases for common variations
+            self._add_channel_aliases()
         except Exception as e:
             print(f"Error loading Haltech units: {e}")
+
+    def _add_channel_aliases(self):
+        """Add aliases for channels that may have different names in log files."""
+        aliases = {
+            # Wideband sensors: "Wideband Sensor X" -> "Wideband O2 X"
+            'Wideband Sensor 1': ['Wideband O2 1'],
+            'Wideband Sensor 2': ['Wideband O2 2'],
+            'Wideband Bank 1': ['Wideband O2 Bank 1'],
+            'Wideband Bank 2': ['Wideband O2 Bank 2'],
+            'Wideband Overall': ['Wideband O2 Overall'],
+        }
+
+        for original_name, alias_list in aliases.items():
+            if original_name in self.channel_forward_conversions:
+                # Copy conversion data to alias names
+                for alias in alias_list:
+                    self.channel_units[alias] = self.channel_units.get(original_name)
+                    self.channel_conversions[alias] = self.channel_conversions.get(original_name)
+                    self.channel_forward_conversions[alias] = self.channel_forward_conversions.get(original_name)
+                    if original_name in self.channel_inverse_conversions:
+                        self.channel_inverse_conversions[alias] = self.channel_inverse_conversions.get(original_name)
 
     def get_unit(self, channel_name: str, use_preference: bool = True, channel_type: str = None) -> str:
         """

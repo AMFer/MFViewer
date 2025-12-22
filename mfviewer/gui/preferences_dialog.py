@@ -127,6 +127,7 @@ class PreferencesDialog(QDialog):
             'L': 'Volume (Large)',
             'cc': 'Volume (Small)',
             'cc/min': 'Flow Rate',
+            'λ': 'Air-Fuel Ratio',
         }
 
         for base_unit in base_units:
