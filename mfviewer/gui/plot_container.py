@@ -28,7 +28,8 @@ class PlotContainer(QWidget):
         layout.setSpacing(0)
 
         # Splitter to hold plot widgets (toolbar removed - all actions moved to context menu)
-        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Default to vertical layout (stacked plots)
+        self.splitter = QSplitter(Qt.Orientation.Vertical)
         self.splitter.setStyleSheet("""
             QSplitter::handle {
                 background-color: #3e3e42;
@@ -59,6 +60,9 @@ class PlotContainer(QWidget):
 
         # Set remove callback
         plot_widget.remove_callback = self._remove_plot
+
+        # Set container reference for context menu access
+        plot_widget.container = self
 
         # Set cursor callback for synchronization
         # Use global sync if available, otherwise use local sync

@@ -32,7 +32,9 @@
       "Bash(\"venv/Scripts/python.exe\" -c \"from mfviewer.utils.units import UnitsManager; import numpy as np; u = UnitsManager\\(\\); print\\(''Testing with array:''\\); result = u.apply_channel_conversion\\(''Fuel Pressure'', np.array\\([4008.0]\\), ''Pressure''\\); print\\(''Input: 4008.0''\\); print\\(''Output:'', result[0]\\); print\\(''Expected: ~300''\\)\")",
       "Bash(\"venv/Scripts/python.exe\" test_afr.py)",
       "Bash(\"venv/Scripts/python.exe\" test_afr2.py)",
-      "Bash(\"venv/Scripts/python.exe\" test_wideband_data.py)"
+      "Bash(\"venv/Scripts/python.exe\" test_wideband_data.py)",
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/gui/mainwindow.py)",
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/gui/mainwindow.py mfviewer/utils/units.py)"
     ]
   }
 }

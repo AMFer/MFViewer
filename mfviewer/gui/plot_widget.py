@@ -39,6 +39,9 @@ class PlotWidget(QWidget):
         # Callback for removing this plot
         self.remove_callback = None
 
+        # Container reference for context menu access
+        self.container = None
+
         # Cursor synchronization
         self.cursor_line = None
         self.cursor_x_position = None
@@ -114,24 +117,7 @@ class PlotWidget(QWidget):
 
     def eventFilter(self, obj, event):
         """Filter events to detect double-clicks on legend items, handle drag/drop, and cursor dragging."""
-        # Handle mouse events on the plot viewport for cursor dragging
-        if obj == self.plot_widget.viewport():
-            if event.type() == QEvent.Type.MouseButtonPress:
-                if event.button() == Qt.MouseButton.LeftButton and self.plot_items:
-                    self.cursor_dragging = True
-                    self.cursor_active = True
-                    self._update_cursor_from_mouse_event(event)
-                    return False  # Let the event propagate for pan/zoom
-            elif event.type() == QEvent.Type.MouseButtonRelease:
-                if event.button() == Qt.MouseButton.LeftButton:
-                    self.cursor_dragging = False
-                    return False
-            elif event.type() == QEvent.Type.MouseMove:
-                if self.cursor_dragging and self.cursor_active and self.plot_items:
-                    self._update_cursor_from_mouse_event(event)
-                    return False  # Let the event propagate for pan/zoom
-
-        # Handle legend double-click
+        # Handle legend double-click first (higher priority)
         if event.type() == QEvent.Type.GraphicsSceneMouseDoubleClick:
             # Get the position in scene coordinates
             scene_pos = event.scenePos()
@@ -148,8 +134,29 @@ class PlotWidget(QWidget):
                         self.remove_channel(channel_name)
                         return True
 
+        # Handle mouse events on the plot viewport for cursor dragging
+        if obj == self.plot_widget.viewport():
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton and self.plot_items:
+                    # Check if mouse is not over legend before starting cursor drag
+                    view_pos = self.plot_widget.mapFromGlobal(event.globalPosition().toPoint())
+                    scene_pos = self.plot_widget.mapToScene(view_pos)
+                    if not self.legend.sceneBoundingRect().contains(scene_pos):
+                        self.cursor_dragging = True
+                        self.cursor_active = True
+                        self._update_cursor_from_mouse_event(event)
+                    return False  # Let the event propagate for pan/zoom
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self.cursor_dragging = False
+                    return False
+            elif event.type() == QEvent.Type.MouseMove:
+                if self.cursor_dragging and self.cursor_active and self.plot_items:
+                    self._update_cursor_from_mouse_event(event)
+                    return False  # Let the event propagate for pan/zoom
+
         # Handle drag/drop events from child plot_widget
-        elif obj == self.plot_widget:
+        if obj == self.plot_widget:
             if event.type() == QEvent.Type.DragEnter:
                 if event.mimeData().hasText():
                     event.acceptProposedAction()
@@ -526,21 +533,21 @@ class PlotWidget(QWidget):
         """Show context menu for plot actions."""
         menu = QMenu(self)
 
-        # Add plot action (calls parent container's add plot method)
-        if hasattr(self.parent(), 'add_plot'):
+        # Add plot action (calls container's add plot method)
+        if self.container and hasattr(self.container, 'add_plot'):
             add_plot_action = QAction("Add Plot", self)
-            add_plot_action.triggered.connect(self.parent().add_plot)
+            add_plot_action.triggered.connect(self.container.add_plot)
             menu.addAction(add_plot_action)
             menu.addSeparator()
 
-        # Layout orientation actions (calls parent container's methods)
-        if hasattr(self.parent(), 'set_layout_orientation'):
+        # Layout orientation actions (calls container's methods)
+        if self.container and hasattr(self.container, 'set_layout_orientation'):
             horizontal_action = QAction("Horizontal Layout", self)
-            horizontal_action.triggered.connect(lambda: self.parent().set_layout_orientation(Qt.Orientation.Horizontal))
+            horizontal_action.triggered.connect(lambda: self.container.set_layout_orientation(Qt.Orientation.Horizontal))
             menu.addAction(horizontal_action)
 
             vertical_action = QAction("Vertical Layout", self)
-            vertical_action.triggered.connect(lambda: self.parent().set_layout_orientation(Qt.Orientation.Vertical))
+            vertical_action.triggered.connect(lambda: self.container.set_layout_orientation(Qt.Orientation.Vertical))
             menu.addAction(vertical_action)
             menu.addSeparator()
 
