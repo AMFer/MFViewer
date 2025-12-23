@@ -360,6 +360,39 @@ class UnitsManager:
                     if original_name in self.channel_inverse_conversions:
                         self.channel_inverse_conversions[alias] = self.channel_inverse_conversions.get(original_name)
 
+        # Fix incorrect Haltech conversions
+        # All BatteryVoltage type channels: Haltech CSV says y=x/10 but should be y=x/1000
+        voltage_channels = [
+            'Home Voltage',
+            'Device Battery Voltage',
+            'Battery Voltage',
+            'Trigger Voltage',
+            'Ignition Coil Power Supply',
+            'Injector Power Supply',
+            'Diagnostic 5V Sensor A rail',
+            'Diagnostic 5V Sensor B rail',
+        ]
+        for ch_name in voltage_channels:
+            self.channel_units[ch_name] = 'Volts'
+            self.channel_conversions[ch_name] = 'y = x/1000'
+            # Forward: x / 1000
+            self.channel_forward_conversions[ch_name] = lambda x: x / 1000 if not np.isnan(x) else x
+            # Inverse: x * 1000
+            self.channel_inverse_conversions[ch_name] = lambda x: x * 1000 if not np.isnan(x) else x
+
+        # Add ignition angle conversions (y = x/10)
+        # Ignition angles in log files are "Ignition X Angle" format
+        ignition_angles = [f'Ignition {i} Angle' for i in range(1, 13)]
+        ignition_angles.extend(['Ignition Angle', 'Base Ignition Angle', 'Ignition Angle (Leading)',
+                                'Ignition Angle Bank 1', 'Ignition Angle Bank 2'])
+        for ch_name in ignition_angles:
+            self.channel_units[ch_name] = '°'
+            self.channel_conversions[ch_name] = 'y = x/10'
+            # Forward: x / 10
+            self.channel_forward_conversions[ch_name] = lambda x: x / 10 if not np.isnan(x) else x
+            # Inverse: x * 10
+            self.channel_inverse_conversions[ch_name] = lambda x: x * 10 if not np.isnan(x) else x
+
     def get_unit(self, channel_name: str, use_preference: bool = True, channel_type: str = None) -> str:
         """
         Get the unit for a channel.
