@@ -9,9 +9,9 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QTabWidget, QFileDialog, QMessageBox,
     QStatusBar, QTreeWidget, QTreeWidgetItem,
-    QLabel, QPushButton, QInputDialog, QMenu, QDialog
+    QLabel, QPushButton, QInputDialog, QMenu, QDialog, QProgressDialog
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QCoreApplication
 from PyQt6.QtGui import QAction, QKeySequence, QPalette, QColor, QCloseEvent, QPixmap
 
 from mfviewer.data.parser import MFLogParser, TelemetryData
@@ -531,19 +531,62 @@ class MainWindow(QMainWindow):
         Args:
             file_path: Path to the log file
         """
+        # Create progress dialog
+        progress = QProgressDialog("Loading telemetry data...", "Cancel", 0, 0, self)
+        progress.setWindowTitle("Loading Log File")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setMinimumWidth(400)
+        progress.setValue(0)
+        progress.setCancelButton(None)  # Remove cancel button for now
+
+        # Apply dark mode styling to progress dialog
+        progress.setStyleSheet("""
+            QProgressDialog {
+                background-color: #1e1e1e;
+            }
+            QLabel {
+                color: #dcdcdc;
+                background-color: #1e1e1e;
+                padding: 10px;
+                font-size: 11pt;
+            }
+            QProgressBar {
+                background-color: #3c3c3c;
+                color: #dcdcdc;
+                border: 1px solid #3e3e42;
+                border-radius: 3px;
+                text-align: center;
+                min-height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #007acc;
+                border-radius: 2px;
+            }
+        """)
+
+        progress.show()
+        QCoreApplication.processEvents()
+
         try:
             self.statusbar.showMessage(f"Loading {Path(file_path).name}...")
             self.current_file = Path(file_path)
 
             # Parse the file
+            progress.setLabelText("Parsing log file...")
+            QCoreApplication.processEvents()
             parser = MFLogParser(file_path)
             self.telemetry = parser.parse()
 
             # Update UI
+            progress.setLabelText("Updating channel tree...")
+            QCoreApplication.processEvents()
             self._populate_channel_tree()
             self._update_window_title()
 
             # Refresh all existing plots with new telemetry data
+            progress.setLabelText("Refreshing plots...")
+            QCoreApplication.processEvents()
             for i in range(self.tab_widget.count()):
                 widget = self.tab_widget.widget(i)
                 if isinstance(widget, PlotContainer):
@@ -567,6 +610,8 @@ class MainWindow(QMainWindow):
                 f"Failed to load file:\n{str(e)}"
             )
             self.statusbar.showMessage("Failed to load file")
+        finally:
+            progress.close()
 
     def _populate_channel_tree(self):
         """Populate the channel tree with available channels."""
@@ -1059,7 +1104,7 @@ class MainWindow(QMainWindow):
             msg_box.setIconPixmap(pixmap)
 
         msg_box.setText(
-            "<h3>MFViewer 0.3.0</h3>"
+            "<h3>MFViewer 0.3.1</h3>"
             "<p>Motorsports Fusion Telemetry Viewer</p>"
         )
         msg_box.setInformativeText(

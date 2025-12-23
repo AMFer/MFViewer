@@ -12,7 +12,7 @@ from PyQt6.QtGui import QPixmap, QPalette, QColor, QPainter, QFont
 from mfviewer.gui.mainwindow import MainWindow
 
 # Version number
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 
 def parse_args():

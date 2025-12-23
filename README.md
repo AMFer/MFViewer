@@ -22,6 +22,7 @@ A Python-based desktop application for viewing and analyzing telemetry log files
   - Customized scrollbars and UI elements
 - **Auto-Refresh**: Automatically refreshes all plots when loading new log files
 - **Statistics**: Real-time legend display with current values for all plotted channels
+- **Progress Feedback**: Dark mode progress dialog with real-time step updates during file loading
 - **Splash Screen**: Clean startup experience with branded splash screen and version display
 - **Branded UI**: MF logo displayed in tab bar for professional appearance
 - **Flexible Layout**: Fixed-width channel panel that doesn't resize with window, but can be manually adjusted
