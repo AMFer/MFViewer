@@ -15,6 +15,25 @@ from mfviewer.gui.mainwindow import MainWindow
 VERSION = "0.3.1"
 
 
+def get_resource_path(relative_path: str) -> Path:
+    """
+    Get absolute path to resource, works for dev and PyInstaller.
+
+    Args:
+        relative_path: Path relative to the project root (e.g., 'Assets/MFSplash.png')
+
+    Returns:
+        Absolute path to the resource
+    """
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable
+        base_path = Path(sys._MEIPASS)
+    else:
+        # Running in development
+        base_path = Path(__file__).parent.parent
+    return base_path / relative_path
+
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
@@ -70,7 +89,7 @@ def main():
     app.setPalette(palette)
 
     # Show splash screen
-    splash_path = Path(__file__).parent.parent / 'Assets' / 'MFSplash.png'
+    splash_path = get_resource_path('Assets/MFSplash.png')
     splash = None
     if splash_path.exists():
         pixmap = QPixmap(str(splash_path))

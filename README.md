@@ -30,12 +30,22 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 
 ## Installation
 
-### Prerequisites
+### For End Users (Windows)
+
+1. Download the latest installer: `MFViewer-Setup-0.3.1.exe`
+2. Run the installer and follow the prompts
+3. Launch MFViewer from the Start Menu or Desktop shortcut
+
+**Configuration files are stored in:** `%LOCALAPPDATA%\MFViewer\MFViewer`
+
+### For Developers
+
+#### Prerequisites
 
 - Python 3.8 or higher
 - pip (Python package manager)
 
-### Setup
+#### Setup
 
 1. Clone or download this repository
 
@@ -58,6 +68,8 @@ A Python-based desktop application for viewing and analyzing telemetry log files
    ```bash
    pip install -r requirements.txt
    ```
+
+For building standalone executables and installers, see [BUILD.md](BUILD.md).
 
 ## Usage
 
@@ -137,6 +149,7 @@ MFViewer/
 - **pyqtgraph**: Fast, interactive plotting
 - **openpyxl**: Excel export support
 - **PyYAML**: Configuration management
+- **platformdirs**: Cross-platform config directories
 
 ## Development Roadmap
 

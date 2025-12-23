@@ -5,6 +5,7 @@ Configuration management for saving and loading tab layouts.
 import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+from platformdirs import user_config_dir
 
 
 class TabConfiguration:
@@ -74,10 +75,12 @@ class TabConfiguration:
 
     @staticmethod
     def get_default_config_dir() -> Path:
-        """Get the default directory for configuration files."""
-        # Use user's home directory
-        config_dir = Path.home() / '.mfviewer'
-        config_dir.mkdir(exist_ok=True)
+        """Get the default configuration directory (platform-specific)."""
+        # Windows: %APPDATA%\MFViewer (e.g., C:\Users\username\AppData\Roaming\MFViewer)
+        # macOS: ~/Library/Application Support/MFViewer
+        # Linux: ~/.config/mfviewer (XDG-compliant)
+        config_dir = Path(user_config_dir("MFViewer", "MFViewer"))
+        config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir
 
     @staticmethod

@@ -1,0 +1,6 @@
+# Build-time dependencies
+# These are only needed for building the standalone executable and installer
+# End users do not need these packages
+
+pyinstaller>=6.0.0
+pillow>=10.0.0

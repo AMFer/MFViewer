@@ -2,6 +2,7 @@
 Main application window.
 """
 
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +21,25 @@ from mfviewer.gui.plot_container import PlotContainer
 from mfviewer.gui.preferences_dialog import PreferencesDialog
 from mfviewer.utils.config import TabConfiguration
 from mfviewer.utils.units import UnitsManager
+
+
+def get_resource_path(relative_path: str) -> Path:
+    """
+    Get absolute path to resource, works for dev and PyInstaller.
+
+    Args:
+        relative_path: Path relative to the project root (e.g., 'Assets/MFSplash.png')
+
+    Returns:
+        Absolute path to the resource
+    """
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable
+        base_path = Path(sys._MEIPASS)
+    else:
+        # Running in development
+        base_path = Path(__file__).parent.parent.parent
+    return base_path / relative_path
 
 
 class ChannelTreeWidget(QTreeWidget):
@@ -388,7 +408,7 @@ class MainWindow(QMainWindow):
         corner_layout.addWidget(self.new_tab_button, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         # Add logo
-        logo_path = Path(__file__).parent.parent.parent / 'Assets' / 'MFFlatTitle.png'
+        logo_path = get_resource_path('Assets/MFFlatTitle.png')
         if logo_path.exists():
             logo_label = QLabel()
             logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1096,7 +1116,7 @@ class MainWindow(QMainWindow):
         msg_box.setWindowTitle("About MFViewer")
 
         # Load and scale splash screen image
-        splash_path = Path(__file__).parent.parent.parent / 'Assets' / 'MFSplash.png'
+        splash_path = get_resource_path('Assets/MFSplash.png')
         if splash_path.exists():
             pixmap = QPixmap(str(splash_path))
             # Scale to reasonable size for dialog (200px wide)
