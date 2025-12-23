@@ -358,6 +358,88 @@ class PlotWidget(QWidget):
         self.cursor_active = False
         self.cursor_dragging = False
 
+    def _toggle_exclude_outliers(self):
+        """Toggle the exclude outliers setting and refresh the plot."""
+        self.exclude_outliers = not self.exclude_outliers
+        self._auto_scale()
+
+    def refresh_with_new_telemetry(self, new_telemetry: 'TelemetryData'):
+        """
+        Refresh all plotted channels with new telemetry data.
+        This is called when a new log file is loaded.
+
+        Args:
+            new_telemetry: New telemetry data object
+        """
+        if not new_telemetry or not self.plot_items:
+            return
+
+        self.telemetry = new_telemetry
+
+        # Store current channel names and colors
+        channels_to_replot = [(plot_info['channel'].name, plot_info['color'])
+                              for plot_info in self.plot_items.values()]
+        cursor_pos = self.cursor_x_position
+
+        # Clear all plots
+        self.clear_all_plots()
+
+        # Re-add all channels from new telemetry
+        for channel_name, original_color in channels_to_replot:
+            # Get channel from new telemetry
+            channel = new_telemetry.get_channel(channel_name)
+            if not channel:
+                # Channel doesn't exist in new file, skip it
+                continue
+
+            # Get channel data
+            data_series = new_telemetry.get_channel_data(channel_name)
+            if data_series is None:
+                continue
+
+            # Get time data (index)
+            time_data = data_series.index.to_numpy()
+            values = data_series.to_numpy()
+
+            # Apply unit conversions if units_manager is available
+            if self.units_manager:
+                # Use the channel's data_type from the log file header
+                values = self.units_manager.apply_channel_conversion(channel_name, values, channel.data_type)
+
+            # Remove NaN values for cleaner plotting
+            mask = ~np.isnan(values)
+            time_data = time_data[mask]
+            values = values[mask]
+
+            if len(time_data) == 0:
+                continue
+
+            # Add plot item with original color
+            pen = pg.mkPen(color=original_color, width=2)
+            plot_item = self.plot_widget.plot(
+                time_data,
+                values,
+                pen=pen,
+                name=channel.name
+            )
+
+            # Store reference
+            self.plot_items[channel.name] = {
+                'plot_item': plot_item,
+                'channel': channel,
+                'color': original_color
+            }
+
+        # Auto-range to fit all data
+        self._auto_scale()
+
+        # Restore cursor position if it was active (but don't restore exact position since time range might be different)
+        if cursor_pos is not None and self.cursor_active:
+            # Reset cursor to start of new data
+            time_range = new_telemetry.get_time_range()
+            if time_range:
+                self.set_cursor_position(time_range[0])
+
     def refresh_with_new_units(self):
         """Refresh all plotted channels with new unit conversions."""
         if not self.telemetry or not self.plot_items:
@@ -444,6 +526,38 @@ class PlotWidget(QWidget):
         """Show context menu for plot actions."""
         menu = QMenu(self)
 
+        # Add plot action (calls parent container's add plot method)
+        if hasattr(self.parent(), 'add_plot'):
+            add_plot_action = QAction("Add Plot", self)
+            add_plot_action.triggered.connect(self.parent().add_plot)
+            menu.addAction(add_plot_action)
+            menu.addSeparator()
+
+        # Layout orientation actions (calls parent container's methods)
+        if hasattr(self.parent(), 'set_layout_orientation'):
+            horizontal_action = QAction("Horizontal Layout", self)
+            horizontal_action.triggered.connect(lambda: self.parent().set_layout_orientation(Qt.Orientation.Horizontal))
+            menu.addAction(horizontal_action)
+
+            vertical_action = QAction("Vertical Layout", self)
+            vertical_action.triggered.connect(lambda: self.parent().set_layout_orientation(Qt.Orientation.Vertical))
+            menu.addAction(vertical_action)
+            menu.addSeparator()
+
+        # Auto scale action
+        auto_scale_action = QAction("Auto Scale", self)
+        auto_scale_action.triggered.connect(self._auto_scale)
+        menu.addAction(auto_scale_action)
+
+        # Exclude outliers toggle
+        exclude_outliers_action = QAction("Exclude Outliers", self)
+        exclude_outliers_action.setCheckable(True)
+        exclude_outliers_action.setChecked(self.exclude_outliers)
+        exclude_outliers_action.triggered.connect(self._toggle_exclude_outliers)
+        menu.addAction(exclude_outliers_action)
+
+        menu.addSeparator()
+
         # Clear all action
         clear_action = QAction("Clear All Channels", self)
         clear_action.triggered.connect(self.clear_all_plots)
@@ -519,10 +633,21 @@ class PlotWidget(QWidget):
         # Update legend labels with values at cursor position
         for sample, label in self.legend.items:
             # Find the channel name from the current label text
-            channel_name = label.text.split(':')[0].strip()
-            # Remove units if present (e.g., "RPM (RPM)" -> "RPM")
-            if ' (' in channel_name:
-                channel_name = channel_name.split(' (')[0].strip()
+            # Split on ':' to separate name from value
+            parts = label.text.split(':', 1)
+            channel_name = parts[0].strip()
+
+            # The channel name might have units appended after a space (e.g., "RPM RPM")
+            # But we need to preserve channel names that have parentheses (e.g., "Fuel - Load (MAP)")
+            # So we check if this channel_name exists in plot_items first before trying to strip units
+            if channel_name not in self.plot_items:
+                # Try removing trailing unit if channel not found
+                # Look for pattern like "ChannelName Unit" where Unit doesn't contain parentheses
+                tokens = channel_name.rsplit(' ', 1)
+                if len(tokens) == 2:
+                    potential_name = tokens[0]
+                    if potential_name in self.plot_items:
+                        channel_name = potential_name
 
             if channel_name in self.plot_items:
                 plot_info = self.plot_items[channel_name]

@@ -3,12 +3,8 @@ Container widget for managing multiple tiled plot widgets in a tab.
 """
 
 from typing import List, Dict, Any
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QSplitter, QToolButton, QMenu, QCheckBox
-)
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSplitter
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction
 
 from mfviewer.gui.plot_widget import PlotWidget
 from mfviewer.data.parser import ChannelInfo, TelemetryData
@@ -31,119 +27,7 @@ class PlotContainer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Toolbar for managing plots
-        toolbar_layout = QHBoxLayout()
-        toolbar_layout.setContentsMargins(5, 5, 5, 5)
-
-        # Add plot button
-        self.add_plot_btn = QPushButton("Add Plot")
-        self.add_plot_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #0e639c;
-                color: #ffffff;
-                border: none;
-                padding: 5px 15px;
-                border-radius: 3px;
-            }
-            QPushButton:hover {
-                background-color: #1177bb;
-            }
-            QPushButton:pressed {
-                background-color: #0d5a8f;
-            }
-        """)
-        self.add_plot_btn.clicked.connect(self._add_plot)
-        toolbar_layout.addWidget(self.add_plot_btn)
-        toolbar_layout.addSpacing(10)
-
-        # Layout direction buttons
-        self.layout_horizontal_btn = QPushButton("Horizontal")
-        self.layout_horizontal_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #0e639c;
-                color: #ffffff;
-                border: none;
-                padding: 5px 15px;
-                border-radius: 3px;
-            }
-            QPushButton:hover {
-                background-color: #1177bb;
-            }
-            QPushButton:pressed {
-                background-color: #0d5a8f;
-            }
-        """)
-        self.layout_horizontal_btn.clicked.connect(lambda: self._set_layout_orientation(Qt.Orientation.Horizontal))
-        toolbar_layout.addWidget(self.layout_horizontal_btn)
-
-        self.layout_vertical_btn = QPushButton("Vertical")
-        self.layout_vertical_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #0e639c;
-                color: #ffffff;
-                border: none;
-                padding: 5px 15px;
-                border-radius: 3px;
-            }
-            QPushButton:hover {
-                background-color: #1177bb;
-            }
-            QPushButton:pressed {
-                background-color: #0d5a8f;
-            }
-        """)
-        self.layout_vertical_btn.clicked.connect(lambda: self._set_layout_orientation(Qt.Orientation.Vertical))
-        toolbar_layout.addWidget(self.layout_vertical_btn)
-        toolbar_layout.addSpacing(10)
-
-        # Auto scale button
-        self.auto_scale_btn = QPushButton("Auto Scale")
-        self.auto_scale_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #0e639c;
-                color: #ffffff;
-                border: none;
-                padding: 5px 15px;
-                border-radius: 3px;
-            }
-            QPushButton:hover {
-                background-color: #1177bb;
-            }
-            QPushButton:pressed {
-                background-color: #0d5a8f;
-            }
-        """)
-        self.auto_scale_btn.clicked.connect(self._auto_scale_all)
-        toolbar_layout.addWidget(self.auto_scale_btn)
-        toolbar_layout.addSpacing(10)
-
-        # Exclude outliers checkbox (checked by default)
-        self.exclude_outliers_cb = QCheckBox("Exclude Outliers")
-        self.exclude_outliers_cb.setChecked(True)
-        self.exclude_outliers_cb.setStyleSheet("""
-            QCheckBox {
-                color: #dcdcdc;
-                spacing: 5px;
-            }
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
-                border: 1px solid #3e3e42;
-                border-radius: 3px;
-                background-color: #2d2d30;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #0e639c;
-                border-color: #0e639c;
-            }
-        """)
-        self.exclude_outliers_cb.stateChanged.connect(self._on_exclude_outliers_changed)
-        toolbar_layout.addWidget(self.exclude_outliers_cb)
-
-        toolbar_layout.addStretch()
-        layout.addLayout(toolbar_layout)
-
-        # Splitter to hold plot widgets
+        # Splitter to hold plot widgets (toolbar removed - all actions moved to context menu)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setStyleSheet("""
             QSplitter::handle {
@@ -158,6 +42,10 @@ class PlotContainer(QWidget):
         # Add initial plot
         self._add_plot()
 
+    def add_plot(self):
+        """Add a new plot widget to the container (public method for context menu)."""
+        self._add_plot()
+
     def _add_plot(self):
         """Add a new plot widget to the container."""
         plot_widget = PlotWidget(units_manager=self.units_manager)
@@ -166,8 +54,8 @@ class PlotContainer(QWidget):
         if self.telemetry:
             plot_widget.telemetry = self.telemetry
 
-        # Apply current exclude outliers setting
-        plot_widget.exclude_outliers = self.exclude_outliers_cb.isChecked()
+        # Default exclude outliers to True
+        plot_widget.exclude_outliers = True
 
         # Set remove callback
         plot_widget.remove_callback = self._remove_plot
@@ -201,20 +89,9 @@ class PlotContainer(QWidget):
             plot_widget.setParent(None)
             plot_widget.deleteLater()
 
-    def _set_layout_orientation(self, orientation: Qt.Orientation):
-        """Set the layout orientation (horizontal or vertical tiling)."""
+    def set_layout_orientation(self, orientation: Qt.Orientation):
+        """Set the layout orientation (horizontal or vertical tiling) - public method for context menu."""
         self.splitter.setOrientation(orientation)
-
-    def _auto_scale_all(self):
-        """Auto-scale all plots in this container."""
-        for plot_widget in self.plot_widgets:
-            plot_widget._auto_scale()
-
-    def _on_exclude_outliers_changed(self, state):
-        """Handle exclude outliers checkbox state change."""
-        exclude = self.exclude_outliers_cb.isChecked()
-        for plot_widget in self.plot_widgets:
-            plot_widget.exclude_outliers = exclude
 
     def add_channel_to_active_plot(self, channel: ChannelInfo, telemetry: TelemetryData):
         """
@@ -296,6 +173,18 @@ class PlotContainer(QWidget):
                     channel = telemetry.get_channel(channel_name)
                     if channel:
                         plot_widget.add_channel(channel, telemetry)
+
+    def refresh_with_new_telemetry(self, new_telemetry: TelemetryData):
+        """
+        Refresh all plot widgets with new telemetry data.
+        This is called when a new log file is loaded.
+
+        Args:
+            new_telemetry: New telemetry data object
+        """
+        self.telemetry = new_telemetry
+        for plot in self.plot_widgets:
+            plot.refresh_with_new_telemetry(new_telemetry)
 
     def clear_all_plots(self):
         """Clear all data from all plot widgets."""

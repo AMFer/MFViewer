@@ -5,7 +5,7 @@ Preferences dialog for user settings.
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QComboBox, QGroupBox, QFormLayout,
-    QDialogButtonBox, QScrollArea, QWidget, QCheckBox, QTextEdit
+    QDialogButtonBox, QScrollArea, QWidget, QCheckBox, QTextEdit, QDoubleSpinBox
 )
 from PyQt6.QtCore import Qt
 from typing import Dict
@@ -20,10 +20,11 @@ class PreferencesDialog(QDialog):
         super().__init__(parent)
         self.units_manager = units_manager
         self.unit_combos: Dict[str, QComboBox] = {}
+        self.multiplier_spinboxes: Dict[str, QDoubleSpinBox] = {}
 
         self.setWindowTitle("Preferences")
-        self.setMinimumWidth(500)
-        self.setMinimumHeight(400)
+        self.setMinimumWidth(700)
+        self.setMinimumHeight(600)
 
         self._setup_ui()
         self._load_current_preferences()
@@ -41,11 +42,7 @@ class PreferencesDialog(QDialog):
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
 
-        # Haltech conversion group
-        haltech_group = self._create_haltech_conversion_group()
-        scroll_layout.addWidget(haltech_group)
-
-        # Units group
+        # Units group (includes multipliers)
         units_group = self._create_units_group()
         scroll_layout.addWidget(units_group)
 
@@ -70,76 +67,74 @@ class PreferencesDialog(QDialog):
         )
         layout.addWidget(button_box)
 
-    def _create_haltech_conversion_group(self) -> QGroupBox:
-        """Create the Haltech conversion preferences group."""
-        group = QGroupBox("Haltech Data Conversion")
-        layout = QVBoxLayout()
-
-        # Explanation label
-        info_label = QLabel(
-            "The Haltech data files apply conversion formulas (e.g., y = x/10) to raw sensor values.\n"
-            "Enable the option below to cancel these conversions and work with raw values."
-        )
-        info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: #a0a0a0; font-size: 9pt;")
-        layout.addWidget(info_label)
-
-        # Checkbox to enable/disable cancellation
-        self.cancel_conversion_cb = QCheckBox("Cancel Haltech conversions (show raw values)")
-        self.cancel_conversion_cb.setChecked(self.units_manager.cancel_haltech_conversion)
-        self.cancel_conversion_cb.setStyleSheet("""
-            QCheckBox {
-                color: #dcdcdc;
-                spacing: 5px;
-                padding: 5px;
-            }
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border: 1px solid #3e3e42;
-                border-radius: 3px;
-                background-color: #2d2d30;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #0e639c;
-                border-color: #0e639c;
-            }
-        """)
-        layout.addWidget(self.cancel_conversion_cb)
-
-        group.setLayout(layout)
-        return group
-
     def _create_units_group(self) -> QGroupBox:
         """Create the units preferences group."""
-        group = QGroupBox("Unit Preferences")
+        group = QGroupBox("Unit Preferences and Data Multipliers")
         layout = QFormLayout()
 
-        # Get all base units that have conversions
-        base_units = self.units_manager.get_all_base_units()
+        # Get all types from the type_to_unit_map (all channel types from log files)
+        type_to_unit = self.units_manager.type_to_unit_map
 
-        # Create combo box for each unit type
-        unit_labels = {
-            'K': 'Temperature',
-            'kPa': 'Pressure (Gauge)',
-            'kPa (Abs)': 'Pressure (Absolute)',
-            'km/h': 'Speed',
-            'L': 'Volume (Large)',
-            'cc': 'Volume (Small)',
-            'cc/min': 'Flow Rate',
-            'λ': 'Air-Fuel Ratio',
+        # Map of default multipliers/divisors for each type
+        type_multipliers = {
+            'Pressure': 10.0,
+            'AbsPressure': 10.0,
+            'Temperature': 10.0,
+            'Angle': 10.0,
+            'Current_mA_as_A': 1000.0,
+            'BatteryVoltage': 1000.0,
+            'AFR': 1000.0,
+            'EngineSpeed': 1.0,
+            'Speed': 1.0,
+            'Percentage': 1.0,
+            'Time_us': 1.0,
+            'Time_ms': 1.0,
+            'Raw': 1.0,
         }
 
-        for base_unit in base_units:
-            label_text = unit_labels.get(base_unit, base_unit)
-            label = QLabel(f"{label_text}:")
+        # Create row for each type with label, multiplier spinbox, and unit combo
+        for channel_type in sorted(type_to_unit.keys()):
+            base_unit = type_to_unit[channel_type]
 
+            # Create label for channel type
+            label = QLabel(f"{channel_type}:")
+
+            # Create horizontal layout for spinbox and combo
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(10)
+
+            # Create spinbox for multiplier/divisor
+            spinbox = QDoubleSpinBox()
+            spinbox.setRange(1.0, 10000.0)
+            spinbox.setDecimals(1)
+            spinbox.setSingleStep(1.0)
+            spinbox.setValue(type_multipliers.get(channel_type, 1.0))
+            spinbox.setPrefix("÷ ")
+            spinbox.setMinimumWidth(100)
+            spinbox.setMaximumWidth(120)
+            self.multiplier_spinboxes[channel_type] = spinbox
+            row_layout.addWidget(spinbox)
+
+            # Create combo box with available units for this base unit
             combo = QComboBox()
             available_units = self.units_manager.get_available_units(base_unit)
-            combo.addItems(available_units)
 
-            self.unit_combos[base_unit] = combo
-            layout.addRow(label, combo)
+            if available_units:
+                combo.addItems(available_units)
+                self.unit_combos[base_unit] = combo
+            else:
+                # No unit conversions available, just show the base unit
+                combo.addItem(base_unit)
+                combo.setEnabled(False)
+                self.unit_combos[base_unit] = combo
+
+            combo.setMinimumWidth(150)
+            row_layout.addWidget(combo)
+            row_layout.addStretch()
+
+            layout.addRow(label, row_widget)
 
         group.setLayout(layout)
         return group
@@ -222,14 +217,16 @@ class PreferencesDialog(QDialog):
         Get the selected preferences.
 
         Returns:
-            Dictionary containing unit preferences and settings
+            Dictionary containing unit preferences, multipliers, and settings
         """
         preferences = {
             'units': {},
-            'cancel_haltech_conversion': self.cancel_conversion_cb.isChecked()
+            'multipliers': {}
         }
         for base_unit, combo in self.unit_combos.items():
             preferences['units'][base_unit] = combo.currentText()
+        for channel_type, spinbox in self.multiplier_spinboxes.items():
+            preferences['multipliers'][channel_type] = spinbox.value()
         return preferences
 
     def _apply_dark_theme(self):
@@ -303,6 +300,65 @@ class PreferencesDialog(QDialog):
             }
             QComboBox QAbstractItemView::item:hover {
                 background-color: #2a2d2e;
+            }
+            QDoubleSpinBox {
+                background-color: #3c3c3c;
+                color: #dcdcdc;
+                border: 1px solid #3e3e42;
+                padding: 5px 8px;
+                border-radius: 2px;
+                min-height: 20px;
+            }
+            QDoubleSpinBox:hover {
+                border: 1px solid #007acc;
+                background-color: #4a4a4a;
+            }
+            QDoubleSpinBox:focus {
+                border: 1px solid #007acc;
+            }
+            QDoubleSpinBox::up-button {
+                background-color: #3c3c3c;
+                border: none;
+                border-left: 1px solid #3e3e42;
+                width: 16px;
+                subcontrol-origin: border;
+                subcontrol-position: top right;
+            }
+            QDoubleSpinBox::up-button:hover {
+                background-color: #4a4a4a;
+            }
+            QDoubleSpinBox::up-button:pressed {
+                background-color: #007acc;
+            }
+            QDoubleSpinBox::up-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-bottom: 4px solid #dcdcdc;
+                width: 0px;
+                height: 0px;
+            }
+            QDoubleSpinBox::down-button {
+                background-color: #3c3c3c;
+                border: none;
+                border-left: 1px solid #3e3e42;
+                width: 16px;
+                subcontrol-origin: border;
+                subcontrol-position: bottom right;
+            }
+            QDoubleSpinBox::down-button:hover {
+                background-color: #4a4a4a;
+            }
+            QDoubleSpinBox::down-button:pressed {
+                background-color: #007acc;
+            }
+            QDoubleSpinBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 4px solid #dcdcdc;
+                width: 0px;
+                height: 0px;
             }
             QPushButton {
                 background-color: #0e639c;

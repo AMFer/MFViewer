@@ -33,6 +33,7 @@ class UnitsManager:
             'AFR': 'λ',
             'Time_us': 'μs',
             'Time_ms': 'ms',
+            'Current_mA_as_A': 'A',  # Current in Amps (raw values are mA, need /1000)
             'Raw': 'raw',
             # Add more mappings as needed
         }
@@ -93,7 +94,79 @@ class UnitsManager:
             'λ': 'λ',  # Lambda by default (can change to AFR)
         }
 
-        self.load_haltech_units()
+        # Note: We now use type-based conversions instead of the Haltech CSV
+        # self.load_haltech_units()
+
+        # Set up special channel conversions
+        self._setup_channel_conversions()
+
+    def _setup_channel_conversions(self):
+        """Set up channel-specific conversions for known channels."""
+        # Fix incorrect Haltech conversions
+        # All BatteryVoltage type channels: Haltech CSV says y=x/10 but should be y=x/1000
+        voltage_channels = [
+            'Home Voltage',
+            'Device Battery Voltage',
+            'Battery Voltage',
+            'Trigger Voltage',
+            'Ignition Coil Power Supply',
+            'Injector Power Supply',
+            'Diagnostic 5V Sensor A rail',
+            'Diagnostic 5V Sensor B rail',
+        ]
+        for ch_name in voltage_channels:
+            self.channel_units[ch_name] = 'Volts'
+            self.channel_conversions[ch_name] = 'y = x/1000'
+            # Forward: x / 1000
+            self.channel_forward_conversions[ch_name] = lambda x: x / 1000 if not np.isnan(x) else x
+            # Inverse: x * 1000
+            self.channel_inverse_conversions[ch_name] = lambda x: x * 1000 if not np.isnan(x) else x
+
+        # Add ignition angle conversions (y = x/10)
+        # Ignition angles in log files are "Ignition X Angle" format
+        ignition_angles = [f'Ignition {i} Angle' for i in range(1, 13)]
+        ignition_angles.extend(['Ignition Angle', 'Base Ignition Angle', 'Ignition Angle (Leading)',
+                                'Ignition Angle Bank 1', 'Ignition Angle Bank 2'])
+        for ch_name in ignition_angles:
+            self.channel_units[ch_name] = '°'
+            self.channel_conversions[ch_name] = 'y = x/10'
+            # Forward: x / 10
+            self.channel_forward_conversions[ch_name] = lambda x: x / 10 if not np.isnan(x) else x
+            # Inverse: x * 10
+            self.channel_inverse_conversions[ch_name] = lambda x: x * 10 if not np.isnan(x) else x
+
+        # Add current conversions for Current_mA_as_A type channels
+        # Raw values are in milliamps, need to convert to amps (y = x/1000)
+        # This applies to all "High Current Output" and "High Side Current" channels
+        current_channels = [
+            '25A High Current Output 1 High Side Current',
+            '25A High Current Output 2 High Side Current',
+            '25A High Current Output 3 High Side Current',
+            '25A High Current Output 4 High Side Current',
+            '8A High Current Output 1 High Side Current',
+            '8A High Current Output 2 High Side Current',
+            '8A High Current Output 3 High Side Current',
+        ]
+        for ch_name in current_channels:
+            self.channel_units[ch_name] = 'A'
+            self.channel_conversions[ch_name] = 'y = x/1000'
+            # Forward: x / 1000 (mA to A)
+            self.channel_forward_conversions[ch_name] = lambda x: x / 1000 if not np.isnan(x) else x
+            # Inverse: x * 1000 (A to mA)
+            self.channel_inverse_conversions[ch_name] = lambda x: x * 1000 if not np.isnan(x) else x
+
+        # Add gauge pressure conversion for Fuel Pressure and MAP
+        # These sensors report values with atmospheric offset that needs to be subtracted
+        # Atmospheric pressure = 101.3 kPa = 1013 raw units
+        # Formula: y = (x - 1013) / 10
+        gauge_pressure_channels = ['Fuel Pressure', 'Fuel - Load (MAP)']
+        for ch_name in gauge_pressure_channels:
+            self.channel_units[ch_name] = 'kPa'
+            self.channel_conversions[ch_name] = 'y = (x - 1013) / 10'
+            # Forward: (x - 1013) / 10 - convert to gauge pressure in kPa
+            self.channel_forward_conversions[ch_name] = lambda x: (x - 1013) / 10 if not np.isnan(x) else x
+            # Inverse: x * 10 + 1013 - convert back to raw absolute pressure
+            self.channel_inverse_conversions[ch_name] = lambda x: x * 10 + 1013 if not np.isnan(x) else x
 
     def _parse_haltech_forward_conversion(self, formula: str) -> Optional[Callable]:
         """
@@ -393,6 +466,42 @@ class UnitsManager:
             # Inverse: x * 10
             self.channel_inverse_conversions[ch_name] = lambda x: x * 10 if not np.isnan(x) else x
 
+        # Add current conversions for Current_mA_as_A type channels
+        # Raw values are in milliamps, need to convert to amps (y = x/1000)
+        # This applies to all "High Current Output" and "High Side Current" channels
+        current_channels = [
+            '25A High Current Output 1 High Side Current',
+            '25A High Current Output 2 High Side Current',
+            '25A High Current Output 3 High Side Current',
+            '25A High Current Output 4 High Side Current',
+            '8A High Current Output 1 High Side Current',
+            '8A High Current Output 2 High Side Current',
+            '8A High Current Output 3 High Side Current',
+        ]
+        for ch_name in current_channels:
+            self.channel_units[ch_name] = 'A'
+            self.channel_conversions[ch_name] = 'y = x/1000'
+            # Forward: x / 1000 (mA to A)
+            self.channel_forward_conversions[ch_name] = lambda x: x / 1000 if not np.isnan(x) else x
+            # Inverse: x * 1000 (A to mA)
+            self.channel_inverse_conversions[ch_name] = lambda x: x * 1000 if not np.isnan(x) else x
+
+        # Add gauge pressure conversion for sensors that report absolute pressure
+        # These sensors report absolute pressure but should display as gauge pressure
+        # Gauge pressure = absolute pressure - atmospheric (101.3 kPa = 1013 raw)
+        # Formula: y = (x - 1013) / 10
+        # This includes:
+        # - Fuel Pressure: Fuel rail pressure (should show boost pressure, not absolute)
+        # - Fuel - Load (MAP): Manifold absolute pressure (should show boost/vacuum relative to atmosphere)
+        gauge_pressure_channels = ['Fuel Pressure', 'Fuel - Load (MAP)']
+        for ch_name in gauge_pressure_channels:
+            self.channel_units[ch_name] = 'kPa'
+            self.channel_conversions[ch_name] = 'y = (x - 1013) / 10'
+            # Forward: (x - 1013) / 10 - convert to gauge pressure in kPa
+            self.channel_forward_conversions[ch_name] = lambda x: (x - 1013) / 10 if not np.isnan(x) else x
+            # Inverse: x * 10 + 1013 - convert back to raw absolute pressure
+            self.channel_inverse_conversions[ch_name] = lambda x: x * 10 + 1013 if not np.isnan(x) else x
+
     def get_unit(self, channel_name: str, use_preference: bool = True, channel_type: str = None) -> str:
         """
         Get the unit for a channel.
@@ -517,6 +626,36 @@ class UnitsManager:
         """Set unit preferences from a dictionary."""
         self.unit_preferences = preferences.copy()
 
+    def _apply_type_based_conversion(self, values: np.ndarray, channel_type: str) -> np.ndarray:
+        """
+        Apply standard conversion based on channel type.
+
+        Most Haltech channels follow standard patterns:
+        - Pressure: raw / 10 (e.g., 1736 -> 173.6 kPa)
+        - AbsPressure: raw / 10 (e.g., 1013 -> 101.3 kPa absolute)
+        - Temperature: raw / 10 (e.g., 2931 -> 293.1 K)
+        - Current_mA_as_A: raw / 1000 (e.g., 165 -> 0.165 A)
+        - BatteryVoltage: raw / 1000 (e.g., 13412 -> 13.412 V)
+        - Angle: raw / 10 (e.g., 150 -> 15.0 degrees)
+
+        Args:
+            values: Raw values from CSV
+            channel_type: Type from log file header
+
+        Returns:
+            Converted values
+        """
+        # Standard conversions for common types
+        if channel_type in ['Pressure', 'AbsPressure', 'Temperature', 'Angle']:
+            # Standard: divide by 10
+            return np.array([v / 10 if not np.isnan(v) else v for v in values])
+        elif channel_type in ['Current_mA_as_A', 'BatteryVoltage', 'AFR']:
+            # Current, Voltage, and AFR: divide by 1000
+            return np.array([v / 1000 if not np.isnan(v) else v for v in values])
+        else:
+            # No conversion for other types (EngineSpeed, Percentage, Speed, etc. are already correct)
+            return values
+
     def apply_channel_conversion(self, channel_name: str, values: np.ndarray, channel_type: str = None) -> np.ndarray:
         """
         Apply conversion to channel data.
@@ -548,8 +687,12 @@ class UnitsManager:
 
         # Normal mode: Apply FORWARD Haltech conversion first (raw -> base unit)
         if channel_name in self.channel_forward_conversions:
+            # Use channel-specific conversion
             forward_func = self.channel_forward_conversions[channel_name]
             values = np.array([forward_func(v) for v in values])
+        elif channel_type:
+            # Apply type-based default conversion if no channel-specific conversion exists
+            values = self._apply_type_based_conversion(values, channel_type)
 
         # Then apply unit preference conversion from base unit to preferred unit
         preferred_unit = self.unit_preferences.get(base_unit, self.default_preferences.get(base_unit, base_unit))

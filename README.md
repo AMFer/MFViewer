@@ -4,14 +4,21 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 
 ## Features
 
+- **Haltech ECU Data Support**: Native support for Haltech ECU log files with automatic unit conversions
 - **Data Parsing**: Parses CSV log files with metadata and channel information
 - **Time-Series Plotting**: Interactive plots with zoom, pan, and multi-channel support using PyQtGraph
 - **Multi-Tab Interface**: Create multiple plot tabs to organize different channel groups
 - **Session Persistence**: Automatically saves and restores your last workspace on startup
 - **Save/Load Configurations**: Save your tab layouts and channel selections for quick reuse
-- **Channel Browser**: Tree view of all available channels grouped by type
-- **Dark Theme**: Professional dark mode interface optimized for long viewing sessions
-- **Statistics**: Basic statistics for telemetry channels
+- **Channel Browser**: High-contrast dark mode tree view of all available channels grouped by type
+- **Unit Conversions**: Intelligent unit conversion system with customizable multipliers
+  - Automatic pressure conversions (gauge/absolute) for fuel pressure and MAP sensors
+  - Temperature, angle, current, voltage, and AFR conversions
+  - Support for multiple AFR fuel types (gasoline, ethanol, methanol, diesel)
+- **Dark Theme**: Professional GitHub-inspired dark mode interface optimized for long viewing sessions
+- **Auto-Refresh**: Automatically refreshes all plots when loading new log files
+- **Statistics**: Real-time legend display with current values for all plotted channels
+- **Splash Screen**: Clean startup experience with branded splash screen
 - **Cross-platform**: Works on Windows, macOS, and Linux
 
 ## Installation
@@ -81,6 +88,10 @@ python -m mfviewer.main
    - Organize different channel groups in separate tabs
 7. **Remove Plots**: Select a channel in the Active Plots list and click "Remove Selected"
 8. **Clear All**: Click "Clear All" to remove all plots from the current tab
+9. **Unit Preferences**: Access Settings → Preferences to customize:
+   - Preferred units for each channel type
+   - Custom multipliers for unit conversions
+   - AFR fuel type selection
 
 ### Keyboard Shortcuts
 

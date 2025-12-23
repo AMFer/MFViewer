@@ -8,7 +8,7 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QTabWidget, QFileDialog, QMessageBox,
-    QStatusBar, QToolBar, QTreeWidget, QTreeWidgetItem,
+    QStatusBar, QTreeWidget, QTreeWidgetItem,
     QLabel, QPushButton, QInputDialog, QMenu, QDialog
 )
 from PyQt6.QtCore import Qt, QSize
@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.telemetry: Optional[TelemetryData] = None
         self.current_file: Optional[Path] = None
+        self.last_directory: Optional[str] = None  # Last directory for file dialogs
         self.plot_tabs: list = []  # Track all plot tab widgets
         self.tab_counter: int = 1  # Counter for naming new tabs
         self.master_viewbox = None  # Master viewbox for X-axis synchronization
@@ -68,7 +69,6 @@ class MainWindow(QMainWindow):
         self._apply_dark_theme()
         self._setup_ui()
         self._setup_menus()
-        self._setup_toolbar()
         self._setup_statusbar()
         self._restore_session()
 
@@ -128,40 +128,109 @@ class MainWindow(QMainWindow):
             QMenu::item:selected {
                 background-color: #2a82da;
             }
-            QToolBar {
-                background-color: #2d2d30;
-                border-bottom: 1px solid #3e3e42;
-                spacing: 3px;
-            }
-            QToolBar QToolButton {
-                background-color: #0e639c;
-                color: #ffffff;
-                border: 1px solid #0e639c;
-                padding: 6px 12px;
-                border-radius: 2px;
-                margin: 2px;
-            }
-            QToolBar QToolButton:hover {
-                background-color: #1177bb;
-                border: 1px solid #1177bb;
-            }
-            QToolBar QToolButton:pressed {
-                background-color: #007acc;
-            }
             QStatusBar {
                 background-color: #007acc;
                 color: #ffffff;
             }
             QTreeWidget {
-                background-color: #1e1e1e;
-                color: #dcdcdc;
-                border: 1px solid #3e3e42;
+                background-color: #0d1117;
+                color: #e6edf3;
+                border: 1px solid #30363d;
+                font-size: 11pt;
+                outline: none;
+            }
+            QTreeWidget::item {
+                padding: 4px 8px;
+                border-radius: 3px;
+                margin: 1px 2px;
             }
             QTreeWidget::item:selected {
-                background-color: #2a82da;
+                background-color: #1f6feb;
+                color: #ffffff;
+                border: 1px solid #388bfd;
             }
-            QTreeWidget::item:hover {
-                background-color: #3e3e42;
+            QTreeWidget::item:hover:!selected {
+                background-color: #161b22;
+                border: 1px solid #30363d;
+            }
+            QTreeWidget::branch {
+                background: transparent;
+            }
+            QTreeWidget::branch:has-siblings:!adjoins-item {
+                border-image: none;
+            }
+            QTreeWidget::branch:has-siblings:adjoins-item {
+                border-image: none;
+            }
+            QTreeWidget::branch:!has-children:!has-siblings:adjoins-item {
+                border-image: none;
+                background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 #58a6ff, stop:0.6 #58a6ff, stop:0.7 transparent);
+                width: 8px;
+                height: 8px;
+                margin: 4px;
+            }
+            QTreeWidget::branch:has-children:!has-siblings:closed,
+            QTreeWidget::branch:closed:has-children:has-siblings {
+                border-image: none;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 transparent,
+                    stop:0.3 #58a6ff,
+                    stop:0.5 #79c0ff,
+                    stop:0.7 #58a6ff,
+                    stop:1 transparent);
+                width: 14px;
+                height: 3px;
+                margin: 6px 2px;
+            }
+            QTreeWidget::branch:open:has-children:!has-siblings,
+            QTreeWidget::branch:open:has-children:has-siblings {
+                border-image: none;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 transparent,
+                    stop:0.3 #58a6ff,
+                    stop:0.5 #79c0ff,
+                    stop:0.7 #58a6ff,
+                    stop:1 transparent);
+                width: 3px;
+                height: 14px;
+                margin: 2px 6px;
+            }
+            QHeaderView::section {
+                background-color: #161b22;
+                color: #58a6ff;
+                padding: 6px 10px;
+                border: none;
+                border-bottom: 2px solid #1f6feb;
+                font-weight: bold;
+                font-size: 10pt;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+            }
+            QTreeWidget QScrollBar:vertical {
+                background-color: #0d1117;
+                width: 12px;
+                border: none;
+                margin: 0px;
+            }
+            QTreeWidget QScrollBar::handle:vertical {
+                background-color: #30363d;
+                border-radius: 6px;
+                min-height: 30px;
+                margin: 2px;
+            }
+            QTreeWidget QScrollBar::handle:vertical:hover {
+                background-color: #484f58;
+            }
+            QTreeWidget QScrollBar::handle:vertical:pressed {
+                background-color: #58a6ff;
+            }
+            QTreeWidget QScrollBar::add-line:vertical,
+            QTreeWidget QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QTreeWidget QScrollBar::add-page:vertical,
+            QTreeWidget QScrollBar::sub-page:vertical {
+                background: none;
             }
             QTabWidget::pane {
                 border: 1px solid #3e3e42;
@@ -383,22 +452,6 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
 
-    def _setup_toolbar(self):
-        """Set up the toolbar."""
-        toolbar = QToolBar("Main Toolbar")
-        toolbar.setIconSize(QSize(24, 24))
-        self.addToolBar(toolbar)
-
-        open_action = QAction("Open", self)
-        open_action.triggered.connect(self.open_file_dialog)
-        toolbar.addAction(open_action)
-
-        toolbar.addSeparator()
-
-        new_tab_action = QAction("New Tab", self)
-        new_tab_action.setToolTip("Create new plot tab (Ctrl+T)")
-        new_tab_action.triggered.connect(self._create_new_plot_tab)
-        toolbar.addAction(new_tab_action)
 
     def _setup_statusbar(self):
         """Set up the status bar."""
@@ -408,14 +461,19 @@ class MainWindow(QMainWindow):
 
     def open_file_dialog(self):
         """Open file dialog to select a log file."""
+        # Use last directory if available, otherwise empty string
+        start_dir = self.last_directory if self.last_directory else ""
+
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Open Telemetry Log File",
-            "",
+            start_dir,
             "CSV Files (*.csv);;All Files (*.*)"
         )
 
         if file_path:
+            # Save the directory for next time
+            self.last_directory = str(Path(file_path).parent)
             self.open_file(file_path)
 
     def open_file(self, file_path: str):
@@ -437,15 +495,13 @@ class MainWindow(QMainWindow):
             self._populate_channel_tree()
             self._update_window_title()
 
-            # Update all plot widgets with telemetry data for drag-and-drop
+            # Refresh all existing plots with new telemetry data
             for i in range(self.tab_widget.count()):
                 widget = self.tab_widget.widget(i)
                 if isinstance(widget, PlotContainer):
-                    widget.telemetry = self.telemetry
-                    for plot_widget in widget.get_all_plot_widgets():
-                        plot_widget.telemetry = self.telemetry
+                    widget.refresh_with_new_telemetry(self.telemetry)
                 elif isinstance(widget, PlotWidget):
-                    widget.telemetry = self.telemetry
+                    widget.refresh_with_new_telemetry(self.telemetry)
 
             # Update status bar
             time_range = self.telemetry.get_time_range()
@@ -775,6 +831,11 @@ class MainWindow(QMainWindow):
         if not session_data:
             return
 
+        # Restore last directory
+        last_directory = session_data.get('last_directory')
+        if last_directory:
+            self.last_directory = last_directory
+
         # Restore last log file
         last_log_file = session_data.get('last_log_file')
         if last_log_file and Path(last_log_file).exists():
@@ -868,7 +929,7 @@ class MainWindow(QMainWindow):
         # Save session
         session_file = str(TabConfiguration.get_session_file())
         last_log_file = str(self.current_file) if self.current_file else None
-        TabConfiguration.save_session(session_file, tabs_data, last_log_file)
+        TabConfiguration.save_session(session_file, tabs_data, last_log_file, self.last_directory)
 
     def closeEvent(self, event):
         """Handle window close event to save session."""
@@ -957,9 +1018,11 @@ class MainWindow(QMainWindow):
             if 'units' in preferences:
                 self.units_manager.set_preferences(preferences['units'])
 
-            # Update Haltech conversion setting
-            if 'cancel_haltech_conversion' in preferences:
-                self.units_manager.cancel_haltech_conversion = preferences['cancel_haltech_conversion']
+            # Update multipliers (save for future use - not yet implemented in units manager)
+            # TODO: Apply multipliers to type-based conversions
+            if 'multipliers' in preferences:
+                # Store multipliers for future implementation
+                pass
 
             self._save_unit_preferences()
 

@@ -5,8 +5,9 @@ Main entry point for MFViewer application.
 import sys
 import argparse
 from pathlib import Path
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QSplashScreen
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap
 
 from mfviewer.gui.mainwindow import MainWindow
 
@@ -48,9 +49,22 @@ def main():
     app.setApplicationName("MFViewer")
     app.setOrganizationName("MFViewer")
 
+    # Show splash screen
+    splash_path = Path(__file__).parent.parent / 'Assets' / 'MFSplash.png'
+    splash = None
+    if splash_path.exists():
+        pixmap = QPixmap(str(splash_path))
+        splash = QSplashScreen(pixmap, Qt.WindowType.WindowStaysOnTopHint)
+        splash.show()
+        app.processEvents()
+
     # Create main window
     window = MainWindow()
     window.show()
+
+    # Close splash screen
+    if splash:
+        splash.finish(window)
 
     # Open file if provided
     if args.file:
