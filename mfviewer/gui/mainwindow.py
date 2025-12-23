@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QInputDialog, QMenu, QDialog
 )
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QAction, QKeySequence, QPalette, QColor, QCloseEvent
+from PyQt6.QtGui import QAction, QKeySequence, QPalette, QColor, QCloseEvent, QPixmap
 
 from mfviewer.data.parser import MFLogParser, TelemetryData
 from mfviewer.gui.plot_widget import PlotWidget
@@ -67,10 +67,24 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1200, 800)
 
         self._apply_dark_theme()
+        self._enable_dark_title_bar()
         self._setup_ui()
         self._setup_menus()
         self._setup_statusbar()
         self._restore_session()
+
+    def _enable_dark_title_bar(self):
+        """Enable dark title bar on Windows."""
+        try:
+            import ctypes
+            hwnd = int(self.winId())
+            # DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 20, ctypes.byref(ctypes.c_int(1)), ctypes.sizeof(ctypes.c_int)
+            )
+        except Exception:
+            # Silently fail on non-Windows platforms or if DWM API is unavailable
+            pass
 
     def _apply_dark_theme(self):
         """Apply dark theme to the application."""
@@ -132,11 +146,18 @@ class MainWindow(QMainWindow):
                 background-color: #007acc;
                 color: #ffffff;
             }
+            QToolTip {
+                background-color: #2d2d30;
+                color: #dcdcdc;
+                border: 1px solid #3e3e42;
+                padding: 4px;
+                border-radius: 2px;
+            }
             QTreeWidget {
                 background-color: #0d1117;
                 color: #e6edf3;
                 border: 1px solid #30363d;
-                font-size: 11pt;
+                font-size: 9pt;
                 outline: none;
             }
             QTreeWidget::item {
@@ -340,6 +361,9 @@ class MainWindow(QMainWindow):
 
         self.splitter.addWidget(self.channel_tree)
 
+        # Set channel tree to not stretch when window is resized
+        self.splitter.setStretchFactor(0, 0)  # Channel tree (index 0) won't stretch
+
         # Center panel: Tab widget for different views
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
@@ -349,20 +373,44 @@ class MainWindow(QMainWindow):
         self.tab_widget.tabBar().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tab_widget.tabBar().customContextMenuRequested.connect(self._show_tab_context_menu)
 
+        # Create corner widget with "+" button and logo
+        corner_widget = QWidget()
+        corner_layout = QHBoxLayout(corner_widget)
+        corner_layout.setContentsMargins(0, 0, 0, 5)  # Add 5px bottom margin to move logo up
+        corner_layout.setSpacing(8)
+        corner_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
         # Add "+" button for new tabs
         self.new_tab_button = QPushButton("+")
         self.new_tab_button.setMaximumSize(30, 30)
         self.new_tab_button.setToolTip("Create new plot tab")
         self.new_tab_button.clicked.connect(self._create_new_plot_tab)
-        self.tab_widget.setCornerWidget(self.new_tab_button, Qt.Corner.TopRightCorner)
+        corner_layout.addWidget(self.new_tab_button, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        # Add logo
+        logo_path = Path(__file__).parent.parent.parent / 'Assets' / 'MFFlatTitle.png'
+        if logo_path.exists():
+            logo_label = QLabel()
+            logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            logo_pixmap = QPixmap(str(logo_path))
+            # Scale to fit tab bar height (35px)
+            logo_pixmap = logo_pixmap.scaledToHeight(35, Qt.TransformationMode.SmoothTransformation)
+            logo_label.setPixmap(logo_pixmap)
+            logo_label.setScaledContents(False)
+            corner_layout.addWidget(logo_label, alignment=Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter)
+
+        self.tab_widget.setCornerWidget(corner_widget, Qt.Corner.TopRightCorner)
 
         # Create first plot tab
         self._create_new_plot_tab()
 
         self.splitter.addWidget(self.tab_widget)
 
-        # Set initial splitter sizes (20% left, 80% right)
-        self.splitter.setSizes([250, 950])
+        # Set tab widget (plots) to stretch when window is resized
+        self.splitter.setStretchFactor(1, 1)  # Tab widget (index 1) will stretch
+
+        # Set initial splitter sizes (22% left, 78% right)
+        self.splitter.setSizes([260, 940])
 
         main_layout.addWidget(self.splitter)
 
@@ -998,14 +1046,27 @@ class MainWindow(QMainWindow):
 
     def _show_about(self):
         """Show about dialog."""
-        QMessageBox.about(
-            self,
-            "About MFViewer",
-            "<h3>MFViewer 0.1.0</h3>"
+        # Create custom message box with logo
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("About MFViewer")
+
+        # Load and scale splash screen image
+        splash_path = Path(__file__).parent.parent.parent / 'Assets' / 'MFSplash.png'
+        if splash_path.exists():
+            pixmap = QPixmap(str(splash_path))
+            # Scale to reasonable size for dialog (200px wide)
+            pixmap = pixmap.scaledToWidth(200, Qt.TransformationMode.SmoothTransformation)
+            msg_box.setIconPixmap(pixmap)
+
+        msg_box.setText(
+            "<h3>MFViewer 0.3.0</h3>"
             "<p>Motorsports Fusion Telemetry Viewer</p>"
-            "<p>A Python-based desktop application for viewing and analyzing "
-            "telemetry log files.</p>"
         )
+        msg_box.setInformativeText(
+            "A Python-based desktop application for viewing and analyzing "
+            "telemetry log files from Haltech ECUs."
+        )
+        msg_box.exec()
 
     def _show_preferences(self):
         """Show preferences dialog."""

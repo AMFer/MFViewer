@@ -6,10 +6,13 @@ import sys
 import argparse
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QSplashScreen
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QRect
+from PyQt6.QtGui import QPixmap, QPalette, QColor, QPainter, QFont
 
 from mfviewer.gui.mainwindow import MainWindow
+
+# Version number
+VERSION = "0.3.0"
 
 
 def parse_args():
@@ -29,7 +32,7 @@ def parse_args():
     parser.add_argument(
         '--version',
         action='version',
-        version='MFViewer 0.1.0'
+        version=f'MFViewer {VERSION}'
     )
 
     return parser.parse_args()
@@ -49,11 +52,48 @@ def main():
     app.setApplicationName("MFViewer")
     app.setOrganizationName("MFViewer")
 
+    # Set dark mode palette for dialogs and title bars
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(45, 45, 48))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 220))
+    palette.setColor(QPalette.ColorRole.Base, QColor(30, 30, 30))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(45, 45, 48))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(220, 220, 220))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor(220, 220, 220))
+    palette.setColor(QPalette.ColorRole.Text, QColor(220, 220, 220))
+    palette.setColor(QPalette.ColorRole.Button, QColor(45, 45, 48))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(220, 220, 220))
+    palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 0, 0))
+    palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+    app.setPalette(palette)
+
     # Show splash screen
     splash_path = Path(__file__).parent.parent / 'Assets' / 'MFSplash.png'
     splash = None
     if splash_path.exists():
         pixmap = QPixmap(str(splash_path))
+        # Scale width to 50%, but height to 45%
+        target_width = pixmap.width() // 2
+        target_height = int(pixmap.height() * 0.45)
+        pixmap = pixmap.scaled(
+            target_width,
+            target_height,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+
+        # Draw version number on splash screen
+        painter = QPainter(pixmap)
+        painter.setPen(QColor(220, 220, 220))
+        font = QFont("Arial", 10)
+        painter.setFont(font)
+        # Draw version in bottom right corner
+        text_rect = QRect(0, pixmap.height() - 25, pixmap.width() - 10, 20)
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom, f"v{VERSION}")
+        painter.end()
+
         splash = QSplashScreen(pixmap, Qt.WindowType.WindowStaysOnTopHint)
         splash.show()
         app.processEvents()

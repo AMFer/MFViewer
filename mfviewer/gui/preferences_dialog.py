@@ -24,7 +24,7 @@ class PreferencesDialog(QDialog):
 
         self.setWindowTitle("Preferences")
         self.setMinimumWidth(700)
-        self.setMinimumHeight(600)
+        self.setMinimumHeight(750)
 
         self._setup_ui()
         self._load_current_preferences()
