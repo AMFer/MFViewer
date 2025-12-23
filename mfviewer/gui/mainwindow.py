@@ -16,11 +16,13 @@ from PyQt6.QtCore import Qt, QSize, QCoreApplication
 from PyQt6.QtGui import QAction, QKeySequence, QPalette, QColor, QCloseEvent, QPixmap
 
 from mfviewer.data.parser import MFLogParser, TelemetryData
+from mfviewer.data.log_manager import LogFileManager
 from mfviewer.gui.plot_widget import PlotWidget
 from mfviewer.gui.plot_container import PlotContainer
 from mfviewer.gui.preferences_dialog import PreferencesDialog
 from mfviewer.utils.config import TabConfiguration
 from mfviewer.utils.units import UnitsManager
+from mfviewer.widgets.log_list_widget import LogListWidget
 
 
 def get_resource_path(relative_path: str) -> Path:
@@ -72,7 +74,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.telemetry: Optional[TelemetryData] = None
+        self.log_manager = LogFileManager()  # REPLACES self.telemetry
         self.current_file: Optional[Path] = None
         self.last_directory: Optional[str] = None  # Last directory for file dialogs
         self.plot_tabs: list = []  # Track all plot tab widgets
@@ -368,7 +370,17 @@ class MainWindow(QMainWindow):
         # Create splitter for resizable panels
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Left panel: Channel selector
+        # Left panel: Vertical splitter for log list and channel tree
+        left_panel_splitter = QSplitter(Qt.Orientation.Vertical)
+
+        # Log list widget (top)
+        self.log_list_widget = LogListWidget()
+        self.log_list_widget.setMinimumHeight(100)
+        self.log_list_widget.log_activated.connect(self._on_log_activated)
+        self.log_list_widget.log_removed.connect(self._on_log_removed)
+        left_panel_splitter.addWidget(self.log_list_widget)
+
+        # Channel tree (bottom)
         self.channel_tree = ChannelTreeWidget()
         self.channel_tree.setHeaderLabel("Channels")
         self.channel_tree.setMinimumWidth(200)
@@ -379,10 +391,16 @@ class MainWindow(QMainWindow):
         self.channel_tree.setDragEnabled(True)
         self.channel_tree.setDragDropMode(ChannelTreeWidget.DragDropMode.DragOnly)
 
-        self.splitter.addWidget(self.channel_tree)
+        left_panel_splitter.addWidget(self.channel_tree)
 
-        # Set channel tree to not stretch when window is resized
-        self.splitter.setStretchFactor(0, 0)  # Channel tree (index 0) won't stretch
+        # Set initial sizes for log list and channel tree (25% / 75%)
+        left_panel_splitter.setSizes([100, 300])
+
+        # Add left panel to main splitter
+        self.splitter.addWidget(left_panel_splitter)
+
+        # Set left panel to not stretch when window is resized
+        self.splitter.setStretchFactor(0, 0)  # Left panel (index 0) won't stretch
 
         # Center panel: Tab widget for different views
         self.tab_widget = QTabWidget()
@@ -596,30 +614,35 @@ class MainWindow(QMainWindow):
             progress.setLabelText("Parsing log file...")
             QCoreApplication.processEvents()
             parser = MFLogParser(file_path)
-            self.telemetry = parser.parse()
+            telemetry = parser.parse()
+
+            # Add to log manager
+            progress.setLabelText("Adding to log manager...")
+            QCoreApplication.processEvents()
+            log_file = self.log_manager.add_log_file(
+                file_path=Path(file_path),
+                telemetry=telemetry,
+                is_active=True
+            )
 
             # Update UI
-            progress.setLabelText("Updating channel tree...")
+            progress.setLabelText("Updating UI...")
             QCoreApplication.processEvents()
+            self.log_list_widget.add_log_file(log_file)
             self._populate_channel_tree()
             self._update_window_title()
 
-            # Refresh all existing plots with new telemetry data
+            # Refresh all existing plots
             progress.setLabelText("Refreshing plots...")
             QCoreApplication.processEvents()
-            for i in range(self.tab_widget.count()):
-                widget = self.tab_widget.widget(i)
-                if isinstance(widget, PlotContainer):
-                    widget.refresh_with_new_telemetry(self.telemetry)
-                elif isinstance(widget, PlotWidget):
-                    widget.refresh_with_new_telemetry(self.telemetry)
+            self._refresh_all_plots()
 
             # Update status bar
-            time_range = self.telemetry.get_time_range()
+            time_range = telemetry.get_time_range()
             duration = time_range[1] - time_range[0]
             self.statusbar.showMessage(
-                f"Loaded: {len(self.telemetry.channels)} channels, "
-                f"{len(self.telemetry.data)} samples, "
+                f"Loaded: {log_file.display_name} - {len(telemetry.channels)} channels, "
+                f"{len(telemetry.data)} samples, "
                 f"{duration:.1f}s duration"
             )
 
@@ -634,15 +657,18 @@ class MainWindow(QMainWindow):
             progress.close()
 
     def _populate_channel_tree(self):
-        """Populate the channel tree with available channels."""
+        """Populate the channel tree with MAIN log's channels."""
         self.channel_tree.clear()
 
-        if not self.telemetry:
+        main_log = self.log_manager.get_main_log()
+        if not main_log:
             return
+
+        telemetry = main_log.telemetry
 
         # Group channels by type
         type_groups = {}
-        for channel in self.telemetry.channels:
+        for channel in telemetry.channels:
             if channel.data_type not in type_groups:
                 type_groups[channel.data_type] = []
             type_groups[channel.data_type].append(channel)
@@ -659,16 +685,62 @@ class MainWindow(QMainWindow):
                 channel_item.setData(0, Qt.ItemDataRole.UserRole, channel)
 
     def _on_channel_double_clicked(self, item: QTreeWidgetItem, column: int):
-        """Handle double-click on channel item."""
+        """Handle double-click on channel item - plot from ALL active logs."""
         channel = item.data(0, Qt.ItemDataRole.UserRole)
-        if channel and self.telemetry:
-            # Add channel to the currently active plot tab
-            current_widget = self.tab_widget.currentWidget()
-            if isinstance(current_widget, PlotContainer):
-                current_widget.add_channel_to_active_plot(channel, self.telemetry)
-            elif isinstance(current_widget, PlotWidget):
-                # Legacy support for old PlotWidget
-                current_widget.add_channel(channel, self.telemetry)
+        if not channel:
+            return
+
+        # Get current plot widget
+        current_widget = self.tab_widget.currentWidget()
+
+        if isinstance(current_widget, PlotContainer):
+            # Find focused plot or use last one
+            focused_plot = None
+            for plot in current_widget.plot_widgets:
+                if plot.hasFocus() or plot.underMouse():
+                    focused_plot = plot
+                    break
+
+            if not focused_plot and current_widget.plot_widgets:
+                focused_plot = current_widget.plot_widgets[-1]
+
+            if focused_plot:
+                focused_plot.add_channel_from_all_logs(channel.name, self.log_manager)
+
+        elif isinstance(current_widget, PlotWidget):
+            # Legacy support
+            current_widget.add_channel_from_all_logs(channel.name, self.log_manager)
+
+    def _on_log_activated(self, index: int, is_active: bool):
+        """Handle checkbox state change for a log file."""
+        self.log_manager.set_active(index, is_active)
+
+        # Update line style icons in log list
+        self.log_list_widget.update_line_styles()
+
+        # If main log changed, refresh channel tree
+        self._populate_channel_tree()
+
+        # Refresh all plots
+        self._refresh_all_plots()
+
+    def _on_log_removed(self, index: int):
+        """Handle log file removal."""
+        log_file = self.log_manager.get_log_at(index)
+        if not log_file:
+            return
+
+        reply = QMessageBox.question(
+            self, 'Remove Log File',
+            f'Remove {log_file.display_name} from comparison?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.log_manager.remove_log_file(index)
+            self.log_list_widget.remove_log_file(index)
+            self._populate_channel_tree()
+            self._refresh_all_plots()
 
     def _create_new_plot_tab(self):
         """Create a new plot tab."""
@@ -1153,11 +1225,21 @@ class MainWindow(QMainWindow):
             self._save_unit_preferences()
 
             # Refresh all plots to apply new units
-            self._refresh_all_plots()
+            self._refresh_all_plots_with_new_units()
 
             self.statusbar.showMessage("Preferences updated", 3000)
 
     def _refresh_all_plots(self):
+        """Refresh all plots in all tabs with current active logs."""
+        for i in range(self.tab_widget.count()):
+            widget = self.tab_widget.widget(i)
+            if isinstance(widget, PlotContainer):
+                for plot_widget in widget.plot_widgets:
+                    plot_widget.refresh_with_multi_log(self.log_manager)
+            elif isinstance(widget, PlotWidget):
+                widget.refresh_with_multi_log(self.log_manager)
+
+    def _refresh_all_plots_with_new_units(self):
         """Refresh all plots with new unit preferences."""
         # Refresh all plot tabs with new unit conversions
         for i in range(self.tab_widget.count()):

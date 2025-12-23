@@ -34,7 +34,9 @@
       "Bash(\"venv/Scripts/python.exe\" test_afr2.py)",
       "Bash(\"venv/Scripts/python.exe\" test_wideband_data.py)",
       "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/gui/mainwindow.py)",
-      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/gui/mainwindow.py mfviewer/utils/units.py)"
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/gui/mainwindow.py mfviewer/utils/units.py)",
+      "Bash(cat:*)",
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/widgets/log_list_widget.py)"
     ]
   }
 }
