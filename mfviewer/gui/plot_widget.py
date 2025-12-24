@@ -2,15 +2,16 @@
 Time-series plotting widget using PyQtGraph.
 """
 
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QListWidget, QListWidgetItem, QSplitter, QCheckBox, QMenu
 )
 from PyQt6.QtCore import Qt, QEvent
-from PyQt6.QtGui import QMouseEvent, QAction
+from PyQt6.QtGui import QMouseEvent, QAction, QPen
 import pyqtgraph as pg
 import numpy as np
+from pathlib import Path
 
 from mfviewer.data.parser import ChannelInfo, TelemetryData
 
@@ -24,13 +25,48 @@ except ImportError:
     OPENGL_AVAILABLE = False
 
 
+# Line styles for multi-log comparison (up to 5 logs)
+# Using Qt.PenStyle for basic style, then custom dash patterns for visibility
+LOG_LINE_STYLES = [
+    Qt.PenStyle.SolidLine,      # Main log (1st)
+    Qt.PenStyle.DashLine,       # 2nd log
+    Qt.PenStyle.DotLine,        # 3rd log
+    Qt.PenStyle.DashDotLine,    # 4th log
+    Qt.PenStyle.DashDotDotLine, # 5th log
+]
+
+# Custom dash patterns for better visibility (values are in pen width units)
+# Format: [dash, gap, dash, gap, ...]
+LOG_DASH_PATTERNS = [
+    None,                    # Solid line - no pattern needed
+    [15, 8],                 # Long dash: 15px dash, 8px gap
+    [3, 6],                  # Dots: 3px dot, 6px gap
+    [15, 6, 3, 6],           # Dash-dot: 15px dash, 6px gap, 3px dot, 6px gap
+    [15, 5, 3, 5, 3, 5],     # Dash-dot-dot: dash, gap, dot, gap, dot, gap
+]
+
+
+def get_line_style_for_log(active_index: int) -> Qt.PenStyle:
+    """Get line style for a log based on its position in active logs."""
+    return LOG_LINE_STYLES[active_index % len(LOG_LINE_STYLES)]
+
+
+def apply_custom_dash_pattern(pen: QPen, active_index: int) -> QPen:
+    """Apply custom dash pattern to pen for better visibility."""
+    pattern_idx = active_index % len(LOG_DASH_PATTERNS)
+    pattern = LOG_DASH_PATTERNS[pattern_idx]
+    if pattern is not None:
+        pen.setDashPattern(pattern)
+    return pen
+
+
 class PlotWidget(QWidget):
     """Widget for plotting telemetry data."""
 
     def __init__(self, units_manager=None):
         super().__init__()
         self.telemetry: Optional[TelemetryData] = None
-        self.plot_items: Dict[str, dict] = {}  # channel_name -> {plot_item, data_item}
+        self.plot_items: Dict[Tuple[str, int], dict] = {}  # (channel_name, log_index) -> plot_info
         self.units_manager = units_manager  # For unit conversions and display
 
         # Exclude outliers setting (default: True)
@@ -130,7 +166,19 @@ class PlotWidget(QWidget):
                 # Find which item was clicked
                 for sample, label in self.legend.items:
                     if label.boundingRect().contains(label.mapFromParent(local_pos)):
-                        channel_name = label.text
+                        # Extract channel name from label text (may include "(Log N)" suffix)
+                        label_text = label.text
+                        # Remove value part after colon if present
+                        if ':' in label_text:
+                            label_text = label_text.split(':', 1)[0].strip()
+
+                        # Check if this is a multi-log label like "Channel (Log 2)"
+                        # and extract the base channel name
+                        channel_name = label_text
+                        if ' (Log ' in label_text:
+                            channel_name = label_text.rsplit(' (Log ', 1)[0]
+
+                        # Remove the channel (from all logs)
                         self.remove_channel(channel_name)
                         return True
 
@@ -184,18 +232,50 @@ class PlotWidget(QWidget):
         Returns:
             List of channel names
         """
-        return list(self.plot_items.keys())
+        # Extract unique channel names from tuple keys
+        return list(set(key[0] for key in self.plot_items.keys()))
 
-    def add_channel(self, channel: ChannelInfo, telemetry: TelemetryData):
+    def get_y_range(self) -> Optional[Tuple[float, float]]:
+        """
+        Get the current Y-axis range.
+
+        Returns:
+            Tuple of (min, max) or None if no range set
+        """
+        view_range = self.plot_widget.viewRange()
+        if view_range and len(view_range) >= 2:
+            y_range = view_range[1]  # [0] is X, [1] is Y
+            if y_range and len(y_range) >= 2:
+                return (y_range[0], y_range[1])
+        return None
+
+    def set_y_range(self, y_min: float, y_max: float):
+        """
+        Set the Y-axis range.
+
+        Args:
+            y_min: Minimum Y value
+            y_max: Maximum Y value
+        """
+        self.plot_widget.setYRange(y_min, y_max, padding=0)
+
+    def add_channel(self, channel: ChannelInfo, telemetry: TelemetryData,
+                    active_index: int = 0, log_file_path: Optional[Path] = None,
+                    time_offset: float = 0.0):
         """
         Add a channel to the plot.
 
         Args:
             channel: Channel metadata
             telemetry: Telemetry data object
+            active_index: Index in active logs list (0 for main log)
+            log_file_path: Path to the log file (optional)
+            time_offset: Time offset to apply in seconds (optional)
         """
-        if channel.name in self.plot_items:
-            # Channel already plotted
+        # Check if already plotted with tuple key
+        plot_key = (channel.name, active_index)
+        if plot_key in self.plot_items:
+            # Channel already plotted for this log
             return
 
         self.telemetry = telemetry
@@ -205,8 +285,8 @@ class PlotWidget(QWidget):
         if data_series is None:
             return
 
-        # Get time data (index)
-        time_data = data_series.index.to_numpy()
+        # Get time data (index) and apply time offset
+        time_data = data_series.index.to_numpy() + time_offset
         values = data_series.to_numpy()
 
         # Apply unit conversions if units_manager is available
@@ -222,7 +302,8 @@ class PlotWidget(QWidget):
         if len(time_data) == 0:
             return
 
-        # Choose color (cycle through vibrant colors for dark backgrounds)
+        # Choose color based on channel name only (same color across all logs)
+        # This way all instances of "RPM" have the same color regardless of log
         colors = [
             (255, 90, 90),     # Bright Red
             (90, 200, 255),    # Bright Blue
@@ -233,34 +314,89 @@ class PlotWidget(QWidget):
             (255, 100, 200),   # Bright Pink
             (240, 240, 100),   # Bright Yellow
         ]
-        color_idx = len(self.plot_items) % len(colors)
-        color = colors[color_idx]
+        # Get existing unique channels (by name only)
+        existing_channel_names = sorted(set(key[0] for key in self.plot_items.keys()))
+        # Check if this channel already has a color assigned
+        if channel.name in existing_channel_names:
+            # Reuse the same color as existing entries for this channel
+            color_idx = existing_channel_names.index(channel.name)
+        else:
+            # New channel - assign next color
+            color_idx = len(existing_channel_names)
+        color = colors[color_idx % len(colors)]
 
-        # Add plot item
-        pen = pg.mkPen(color=color, width=2)
+        # Get line style based on log position (different line styles for each log)
+        line_style = get_line_style_for_log(active_index)
+
+        # Add plot item with style and custom dash pattern for better visibility
+        pen = pg.mkPen(color=color, width=2, style=line_style)
+        apply_custom_dash_pattern(pen, active_index)
+
+        # Only add legend entry for first occurrence of channel (from first log)
+        # Subsequent logs for same channel don't get separate legend entries
+        is_first_for_channel = not any(key[0] == channel.name for key in self.plot_items.keys())
+        legend_name = channel.name if is_first_for_channel else None
+
         plot_item = self.plot_widget.plot(
             time_data,
             values,
             pen=pen,
-            name=channel.name
+            name=legend_name  # None means no legend entry
         )
 
-        # Store reference
-        self.plot_items[channel.name] = {
+        # Store reference with new structure
+        self.plot_items[plot_key] = {
             'plot_item': plot_item,
             'channel': channel,
-            'color': color
+            'color': color,
+            'log_index': active_index,
+            'log_file_path': log_file_path,
+            'line_style': line_style
         }
 
         # Auto-range to fit all data
         self._auto_scale()
 
+    def add_channel_from_all_logs(self, channel_name: str, log_manager):
+        """
+        Plot a channel from all active logs.
+
+        Args:
+            channel_name: Channel to plot
+            log_manager: LogFileManager instance
+        """
+        active_logs = log_manager.get_active_logs()
+
+        for active_index, log_file in enumerate(active_logs):
+            channel = log_file.telemetry.get_channel(channel_name)
+
+            if channel:
+                self.add_channel(
+                    channel=channel,
+                    telemetry=log_file.telemetry,
+                    active_index=active_index,
+                    log_file_path=log_file.file_path,
+                    time_offset=log_file.time_offset
+                )
+            # Skip logs that don't have this channel
+
     def _auto_scale(self):
         """
         Auto-scale the plot to fit all data.
         If 'Exclude Outliers' is checked, removes outliers on a per-channel basis before scaling.
+        For Percentage type channels, always use 0-100 range.
         """
         if not self.plot_items:
+            return
+
+        # Check if all channels are Percentage type - if so, use fixed 0-100 range
+        all_percentage = all(
+            plot_info['channel'].data_type == 'Percentage'
+            for plot_info in self.plot_items.values()
+        )
+        if all_percentage:
+            self.plot_widget.setYRange(0, 100, padding=0)
+            self.plot_widget.enableAutoRange(axis='x')
             return
 
         if self.exclude_outliers:
@@ -316,22 +452,27 @@ class PlotWidget(QWidget):
         # If not excluding outliers or no data, just use standard auto-range
         self.plot_widget.autoRange()
 
-    def remove_channel(self, channel_name: str):
+    def remove_channel(self, channel_name: str, log_index: Optional[int] = None):
         """
-        Remove a channel from the plot.
+        Remove channel from plot.
 
         Args:
-            channel_name: Name of the channel to remove
+            channel_name: Channel to remove
+            log_index: If specified, remove only this log's version.
+                       If None, remove from all logs.
         """
-        if channel_name not in self.plot_items:
-            return
-
-        # Remove plot item
-        plot_info = self.plot_items[channel_name]
-        self.plot_widget.removeItem(plot_info['plot_item'])
-
-        # Remove from dict
-        del self.plot_items[channel_name]
+        if log_index is not None:
+            # Remove specific log
+            plot_key = (channel_name, log_index)
+            if plot_key in self.plot_items:
+                self.plot_widget.removeItem(self.plot_items[plot_key]['plot_item'])
+                del self.plot_items[plot_key]
+        else:
+            # Remove all logs
+            keys_to_remove = [k for k in self.plot_items.keys() if k[0] == channel_name]
+            for key in keys_to_remove:
+                self.plot_widget.removeItem(self.plot_items[key]['plot_item'])
+                del self.plot_items[key]
 
     def clear_all_plots(self):
         """Clear all plots."""
@@ -373,7 +514,8 @@ class PlotWidget(QWidget):
     def refresh_with_new_telemetry(self, new_telemetry: 'TelemetryData'):
         """
         Refresh all plotted channels with new telemetry data.
-        This is called when a new log file is loaded.
+        This is called when a new log file is loaded (single-log mode).
+        For multi-log mode, use refresh_with_multi_log() instead.
 
         Args:
             new_telemetry: New telemetry data object
@@ -383,16 +525,24 @@ class PlotWidget(QWidget):
 
         self.telemetry = new_telemetry
 
-        # Store current channel names and colors
-        channels_to_replot = [(plot_info['channel'].name, plot_info['color'])
-                              for plot_info in self.plot_items.values()]
+        # Store current plot info with tuple keys
+        plots_to_replot = [
+            (plot_key, plot_info['channel'].name, plot_info['color'],
+             plot_info['line_style'], plot_info.get('log_file_path'))
+            for plot_key, plot_info in self.plot_items.items()
+        ]
         cursor_pos = self.cursor_x_position
 
         # Clear all plots
         self.clear_all_plots()
 
+        # Track which channels have had legend entries added
+        channels_with_legend = set()
+
         # Re-add all channels from new telemetry
-        for channel_name, original_color in channels_to_replot:
+        for plot_key, channel_name, original_color, line_style, log_file_path in plots_to_replot:
+            original_channel_name, log_index = plot_key
+
             # Get channel from new telemetry
             channel = new_telemetry.get_channel(channel_name)
             if not channel:
@@ -421,20 +571,31 @@ class PlotWidget(QWidget):
             if len(time_data) == 0:
                 continue
 
-            # Add plot item with original color
-            pen = pg.mkPen(color=original_color, width=2)
+            # Add plot item with original color and style with custom dash pattern
+            pen = pg.mkPen(color=original_color, width=2, style=line_style)
+            apply_custom_dash_pattern(pen, log_index)
+
+            # Only add legend entry for first occurrence of each channel
+            legend_name = None
+            if channel.name not in channels_with_legend:
+                legend_name = channel.name
+                channels_with_legend.add(channel.name)
+
             plot_item = self.plot_widget.plot(
                 time_data,
                 values,
                 pen=pen,
-                name=channel.name
+                name=legend_name  # None means no legend entry
             )
 
-            # Store reference
-            self.plot_items[channel.name] = {
+            # Store reference with tuple key
+            self.plot_items[plot_key] = {
                 'plot_item': plot_item,
                 'channel': channel,
-                'color': original_color
+                'color': original_color,
+                'log_index': log_index,
+                'log_file_path': log_file_path,
+                'line_style': line_style
             }
 
         # Auto-range to fit all data
@@ -452,16 +613,24 @@ class PlotWidget(QWidget):
         if not self.telemetry or not self.plot_items:
             return
 
-        # Store current channels and cursor position
-        channels_to_replot = [(plot_info['channel'], plot_info['color'])
-                              for plot_info in self.plot_items.values()]
+        # Store current plot info with tuple keys
+        plots_to_replot = [
+            (plot_key, plot_info['channel'], plot_info['color'],
+             plot_info['line_style'], plot_info.get('log_file_path'))
+            for plot_key, plot_info in self.plot_items.items()
+        ]
         cursor_pos = self.cursor_x_position
 
         # Clear all plots
         self.clear_all_plots()
 
+        # Track which channels have had legend entries added
+        channels_with_legend = set()
+
         # Re-add all channels with new unit conversions
-        for channel, original_color in channels_to_replot:
+        for plot_key, channel, original_color, line_style, log_file_path in plots_to_replot:
+            channel_name, log_index = plot_key
+
             # Get channel data
             data_series = self.telemetry.get_channel_data(channel.name)
             if data_series is None:
@@ -484,20 +653,31 @@ class PlotWidget(QWidget):
             if len(time_data) == 0:
                 continue
 
-            # Add plot item with original color
-            pen = pg.mkPen(color=original_color, width=2)
+            # Add plot item with original color and style with custom dash pattern
+            pen = pg.mkPen(color=original_color, width=2, style=line_style)
+            apply_custom_dash_pattern(pen, log_index)
+
+            # Only add legend entry for first occurrence of each channel
+            legend_name = None
+            if channel.name not in channels_with_legend:
+                legend_name = channel.name
+                channels_with_legend.add(channel.name)
+
             plot_item = self.plot_widget.plot(
                 time_data,
                 values,
                 pen=pen,
-                name=channel.name
+                name=legend_name  # None means no legend entry
             )
 
-            # Store reference
-            self.plot_items[channel.name] = {
+            # Store reference with tuple key
+            self.plot_items[plot_key] = {
                 'plot_item': plot_item,
                 'channel': channel,
-                'color': original_color
+                'color': original_color,
+                'log_index': log_index,
+                'log_file_path': log_file_path,
+                'line_style': line_style
             }
 
         # Auto-range to fit all data
@@ -506,6 +686,26 @@ class PlotWidget(QWidget):
         # Restore cursor position if it was active
         if cursor_pos is not None and self.cursor_active:
             self.set_cursor_position(cursor_pos)
+
+    def refresh_with_multi_log(self, log_manager):
+        """
+        Refresh all plotted channels from current active logs.
+
+        Args:
+            log_manager: LogFileManager instance
+        """
+        if not self.plot_items:
+            return
+
+        # Collect unique channel names
+        channel_names = set(key[0] for key in self.plot_items.keys())
+
+        # Clear all
+        self.clear_all_plots()
+
+        # Re-plot from active logs
+        for channel_name in channel_names:
+            self.add_channel_from_all_logs(channel_name, log_manager)
 
     def dragEnterEvent(self, event):
         """Handle drag enter event."""
@@ -629,7 +829,7 @@ class PlotWidget(QWidget):
 
     def _update_legend_with_cursor_values(self, x_pos: float):
         """
-        Update legend to show values at cursor position.
+        Update legend to show values at cursor position from all logs.
 
         Args:
             x_pos: X position to read values from
@@ -637,45 +837,49 @@ class PlotWidget(QWidget):
         if not self.legend:
             return
 
-        # Update legend labels with values at cursor position
+        # Find the maximum log index to know how many value slots to show
+        max_log_index = max((key[1] for key in self.plot_items.keys()), default=0)
+
+        # Update legend labels with values from all logs
         for sample, label in self.legend.items:
             # Find the channel name from the current label text
             # Split on ':' to separate name from value
             parts = label.text.split(':', 1)
             channel_name = parts[0].strip()
 
-            # The channel name might have units appended after a space (e.g., "RPM RPM")
-            # But we need to preserve channel names that have parentheses (e.g., "Fuel - Load (MAP)")
-            # So we check if this channel_name exists in plot_items first before trying to strip units
-            if channel_name not in self.plot_items:
-                # Try removing trailing unit if channel not found
-                # Look for pattern like "ChannelName Unit" where Unit doesn't contain parentheses
-                tokens = channel_name.rsplit(' ', 1)
-                if len(tokens) == 2:
-                    potential_name = tokens[0]
-                    if potential_name in self.plot_items:
-                        channel_name = potential_name
+            # Collect values from all logs for this channel
+            values_list = []
+            unit_str = ''
+            channel_type = None
 
-            if channel_name in self.plot_items:
-                plot_info = self.plot_items[channel_name]
-                plot_item = plot_info['plot_item']
-                channel = plot_info['channel']
+            for log_idx in range(max_log_index + 1):
+                plot_key = (channel_name, log_idx)
+                if plot_key in self.plot_items:
+                    plot_info = self.plot_items[plot_key]
+                    plot_item = plot_info['plot_item']
+                    channel = plot_info['channel']
 
-                # Get value at cursor position
-                value_str = self._get_value_at_position(plot_item, x_pos)
+                    # Get unit from first available channel
+                    if channel_type is None:
+                        channel_type = channel.data_type
+                        if self.units_manager:
+                            unit = self.units_manager.get_unit(channel_name, use_preference=True, channel_type=channel_type)
+                            if unit:
+                                unit_str = f" {unit}"
 
-                # Get unit for display (using channel type from log file)
-                unit_str = ''
-                if self.units_manager:
-                    unit = self.units_manager.get_unit(channel_name, use_preference=True, channel_type=channel.data_type)
-                    if unit:
-                        unit_str = f" {unit}"
-
-                # Update label text
-                if value_str:
-                    label.setText(f"{channel_name}: {value_str}{unit_str}")
+                    # Get value at cursor position
+                    value_str = self._get_value_at_position(plot_item, x_pos)
+                    values_list.append(value_str if value_str else '--')
                 else:
-                    label.setText(f"{channel_name}{unit_str}")
+                    # Channel doesn't exist in this log
+                    values_list.append('--')
+
+            # Format the label with all values side-by-side
+            if any(v != '--' for v in values_list):
+                values_display = ' | '.join(values_list)
+                label.setText(f"{channel_name}: {values_display}{unit_str}")
+            else:
+                label.setText(f"{channel_name}{unit_str}")
 
     def _get_value_at_position(self, plot_item, x_pos: float) -> Optional[str]:
         """

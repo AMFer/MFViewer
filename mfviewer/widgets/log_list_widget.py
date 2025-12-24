@@ -7,10 +7,10 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QCheckBox, QLabel, QPushButton
+    QCheckBox, QLabel, QPushButton, QMenu
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QPixmap, QPainter, QPen, QIcon
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint
+from PyQt6.QtGui import QPixmap, QPainter, QPen, QIcon, QMouseEvent, QAction
 
 from mfviewer.data.log_manager import LogFile
 
@@ -53,6 +53,7 @@ class LogListItem(QWidget):
 
     item_toggled = pyqtSignal(int, bool)  # index, is_active
     item_removed = pyqtSignal(int)         # index
+    context_menu_requested = pyqtSignal(int, QPoint)  # index, global_position
 
     def __init__(self, log_file: LogFile, active_index: int = 0):
         super().__init__()
@@ -67,6 +68,35 @@ class LogListItem(QWidget):
         self.checkbox = QCheckBox()
         self.checkbox.setChecked(log_file.is_active)
         self.checkbox.toggled.connect(self._on_toggled)
+        self.checkbox.setStyleSheet("""
+            QCheckBox {
+                spacing: 5px;
+                color: #dcdcdc;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border: 1px solid #3e3e42;
+                border-radius: 3px;
+                background-color: #2d2d30;
+            }
+            QCheckBox::indicator:hover {
+                border: 1px solid #007acc;
+                background-color: #3e3e42;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #007acc;
+                border: 1px solid #007acc;
+                image: url(none);
+            }
+            QCheckBox::indicator:checked:hover {
+                background-color: #1e8ad6;
+                border: 1px solid #1e8ad6;
+            }
+            QCheckBox::indicator:unchecked {
+                background-color: #2d2d30;
+            }
+        """)
         layout.addWidget(self.checkbox)
 
         # Line style icon
@@ -134,12 +164,22 @@ class LogListItem(QWidget):
         """Handle remove button click."""
         self.item_removed.emit(self.log_file.index)
 
+    def mousePressEvent(self, event: QMouseEvent):
+        """Handle mouse press to show context menu on right-click."""
+        if event.button() == Qt.MouseButton.RightButton:
+            # Show context menu on right-click
+            self.context_menu_requested.emit(self.log_file.index, event.globalPosition().toPoint())
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
 
 class LogListWidget(QWidget):
     """Widget for displaying and managing multiple log files."""
 
     log_activated = pyqtSignal(int, bool)  # index, is_active
     log_removed = pyqtSignal(int)          # index
+    log_context_menu = pyqtSignal(int, QPoint)  # index, global_position
 
     def __init__(self):
         super().__init__()
@@ -168,6 +208,49 @@ class LogListWidget(QWidget):
             QListWidget::item:selected {
                 background-color: #3e3e42;
             }
+
+            /* Scrollbar styling */
+            QScrollBar:vertical {
+                background-color: #1e1e1e;
+                width: 12px;
+                border: none;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #3e3e42;
+                min-height: 20px;
+                border-radius: 6px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #4e4e52;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+
+            QScrollBar:horizontal {
+                background-color: #1e1e1e;
+                height: 12px;
+                border: none;
+            }
+            QScrollBar::handle:horizontal {
+                background-color: #3e3e42;
+                min-width: 20px;
+                border-radius: 6px;
+                margin: 2px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background-color: #4e4e52;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                width: 0px;
+            }
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                background: none;
+            }
         """)
         layout.addWidget(self.list_widget)
 
@@ -185,6 +268,7 @@ class LogListWidget(QWidget):
         item_widget = LogListItem(log_file, active_index)
         item_widget.item_toggled.connect(self._on_item_toggled)
         item_widget.item_removed.connect(self._on_item_removed)
+        item_widget.context_menu_requested.connect(self._on_context_menu_requested)
 
         # Create list item
         list_item = QListWidgetItem(self.list_widget)
@@ -267,3 +351,7 @@ class LogListWidget(QWidget):
     def _on_item_removed(self, index: int):
         """Handle item remove button click."""
         self.log_removed.emit(index)
+
+    def _on_context_menu_requested(self, index: int, position: QPoint):
+        """Handle context menu request from log item."""
+        self.log_context_menu.emit(index, position)

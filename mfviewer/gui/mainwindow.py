@@ -20,6 +20,7 @@ from mfviewer.data.log_manager import LogFileManager
 from mfviewer.gui.plot_widget import PlotWidget
 from mfviewer.gui.plot_container import PlotContainer
 from mfviewer.gui.preferences_dialog import PreferencesDialog
+from mfviewer.gui.time_sync_dialog import TimeSyncDialog
 from mfviewer.utils.config import TabConfiguration
 from mfviewer.utils.units import UnitsManager
 from mfviewer.widgets.log_list_widget import LogListWidget
@@ -76,6 +77,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.log_manager = LogFileManager()  # REPLACES self.telemetry
         self.current_file: Optional[Path] = None
+        self.current_config_file: Optional[Path] = None  # Track current config file for Save
         self.last_directory: Optional[str] = None  # Last directory for file dialogs
         self.plot_tabs: list = []  # Track all plot tab widgets
         self.tab_counter: int = 1  # Counter for naming new tabs
@@ -378,6 +380,7 @@ class MainWindow(QMainWindow):
         self.log_list_widget.setMinimumHeight(100)
         self.log_list_widget.log_activated.connect(self._on_log_activated)
         self.log_list_widget.log_removed.connect(self._on_log_removed)
+        self.log_list_widget.log_context_menu.connect(self._on_log_context_menu)
         left_panel_splitter.addWidget(self.log_list_widget)
 
         # Channel tree (bottom)
@@ -404,7 +407,7 @@ class MainWindow(QMainWindow):
 
         # Center panel: Tab widget for different views
         self.tab_widget = QTabWidget()
-        self.tab_widget.setTabsClosable(True)
+        self.tab_widget.setTabsClosable(False)  # Close via context menu only
         self.tab_widget.tabCloseRequested.connect(self._close_tab)
 
         # Enable context menu on tabs
@@ -464,13 +467,23 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self.open_file_dialog)
         file_menu.addAction(open_action)
 
+        refresh_action = QAction("&Refresh All Log Files", self)
+        refresh_action.setShortcut(QKeySequence("F5"))
+        refresh_action.triggered.connect(self._refresh_all_log_files)
+        file_menu.addAction(refresh_action)
+
         file_menu.addSeparator()
 
         # Configuration save/load
-        save_config_action = QAction("&Save Tab Configuration...", self)
-        save_config_action.setShortcut(QKeySequence("Ctrl+S"))
+        save_config_action = QAction("&Save Tab Configuration", self)
+        save_config_action.setShortcut(QKeySequence.StandardKey.Save)
         save_config_action.triggered.connect(self._save_configuration)
         file_menu.addAction(save_config_action)
+
+        save_as_config_action = QAction("Save Tab Configuration &As...", self)
+        save_as_config_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        save_as_config_action.triggered.connect(self._save_configuration_as)
+        file_menu.addAction(save_as_config_action)
 
         load_config_action = QAction("&Load Tab Configuration...", self)
         load_config_action.setShortcut(QKeySequence("Ctrl+L"))
@@ -525,6 +538,14 @@ class MainWindow(QMainWindow):
 
         # Tools menu
         tools_menu = menubar.addMenu("&Tools")
+
+        # Time synchronization
+        time_sync_action = QAction("&Time Synchronization...", self)
+        time_sync_action.setShortcut(QKeySequence("Ctrl+Shift+T"))
+        time_sync_action.triggered.connect(self._show_time_sync_dialog)
+        tools_menu.addAction(time_sync_action)
+
+        tools_menu.addSeparator()
 
         preferences_action = QAction("&Preferences...", self)
         preferences_action.setShortcut(QKeySequence("Ctrl+,"))
@@ -624,6 +645,11 @@ class MainWindow(QMainWindow):
                 telemetry=telemetry,
                 is_active=True
             )
+
+            # Auto-align all logs to start at time 0
+            progress.setLabelText("Aligning time offsets...")
+            QCoreApplication.processEvents()
+            self.log_manager.auto_align_to_zero()
 
             # Update UI
             progress.setLabelText("Updating UI...")
@@ -741,6 +767,165 @@ class MainWindow(QMainWindow):
             self.log_list_widget.remove_log_file(index)
             self._populate_channel_tree()
             self._refresh_all_plots()
+
+    def _replace_log_file(self, index: int):
+        """Replace a log file with a new one."""
+        log_file = self.log_manager.get_log_at(index)
+        if not log_file:
+            return
+
+        # Store current state
+        was_active = log_file.is_active
+        old_time_offset = log_file.time_offset
+
+        # Get starting directory
+        start_dir = str(log_file.file_path.parent) if log_file.file_path.exists() else ""
+
+        # Open file dialog
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Replace Log File",
+            start_dir,
+            "CSV Files (*.csv);;All Files (*.*)"
+        )
+
+        if not file_path:
+            return  # User cancelled
+
+        # Parse new file
+        from mfviewer.data.parser import MFLogParser
+        parser = MFLogParser()
+        new_telemetry = parser.parse_file(Path(file_path))
+
+        if new_telemetry is None:
+            QMessageBox.critical(
+                self,
+                "Parse Error",
+                f"Failed to parse the selected file."
+            )
+            return
+
+        # Remove old log
+        self.log_manager.remove_log_file(index)
+        self.log_list_widget.remove_log_file(index)
+
+        # Add new log at the same position
+        new_log = self.log_manager.add_log_file(Path(file_path), new_telemetry, is_active=was_active)
+        new_log.time_offset = old_time_offset
+
+        # Update UI
+        self.log_list_widget.add_log_file(new_log)
+        self._populate_channel_tree()
+        self._refresh_all_plots()
+        self.statusbar.showMessage(f"Replaced log with {Path(file_path).name}", 3000)
+
+    def _refresh_all_log_files(self):
+        """Reload all log files from disk and refresh plots."""
+        if not self.log_manager.log_files:
+            QMessageBox.information(
+                self,
+                "No Logs Loaded",
+                "Please open at least one log file before refreshing."
+            )
+            return
+
+        from mfviewer.data.parser import MFLogParser
+        parser = MFLogParser()
+
+        # Create progress dialog
+        num_files = len(self.log_manager.log_files)
+        progress = QProgressDialog("Refreshing log files...", None, 0, num_files + 1, self)
+        progress.setWindowTitle("Refreshing Logs")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setMinimumWidth(400)
+        progress.setValue(0)
+        progress.setStyleSheet("""
+            QProgressDialog {
+                background-color: #1e1e1e;
+            }
+            QLabel {
+                color: #dcdcdc;
+                background-color: #1e1e1e;
+                padding: 10px;
+                font-size: 11pt;
+            }
+            QProgressBar {
+                background-color: #3c3c3c;
+                color: #dcdcdc;
+                border: 1px solid #3e3e42;
+                border-radius: 3px;
+                text-align: center;
+                min-height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #007acc;
+                border-radius: 2px;
+            }
+        """)
+        progress.show()
+        QCoreApplication.processEvents()
+
+        # Re-parse each file
+        for i, log_file in enumerate(self.log_manager.log_files):
+            progress.setLabelText(f"Refreshing {log_file.display_name}...")
+            progress.setValue(i)
+            QCoreApplication.processEvents()
+
+            if log_file.file_path.exists():
+                new_telemetry = parser.parse_file(log_file.file_path)
+                if new_telemetry:
+                    log_file.telemetry = new_telemetry
+
+        # Refresh UI
+        progress.setLabelText("Updating plots...")
+        progress.setValue(num_files)
+        QCoreApplication.processEvents()
+
+        self._populate_channel_tree()
+        self._refresh_all_plots()
+
+        progress.close()
+        self.statusbar.showMessage("All log files refreshed", 3000)
+
+    def _on_log_context_menu(self, index: int, position):
+        """Handle context menu request for a log file."""
+        log_file = self.log_manager.get_log_at(index)
+        if not log_file:
+            return
+
+        menu = QMenu(self)
+
+        # Activate/Deactivate action
+        if log_file.is_active:
+            deactivate_action = QAction("Deactivate Log", self)
+            deactivate_action.triggered.connect(lambda: self._on_log_activated(index, False))
+            menu.addAction(deactivate_action)
+        else:
+            activate_action = QAction("Activate Log", self)
+            activate_action.triggered.connect(lambda: self._on_log_activated(index, True))
+            menu.addAction(activate_action)
+
+        menu.addSeparator()
+
+        # Remove action
+        remove_action = QAction("Remove Log", self)
+        remove_action.triggered.connect(lambda: self._on_log_removed(index))
+        menu.addAction(remove_action)
+
+        # Replace action
+        replace_action = QAction("Replace Log File...", self)
+        replace_action.triggered.connect(lambda: self._replace_log_file(index))
+        menu.addAction(replace_action)
+
+        menu.addSeparator()
+
+        # Time offset action
+        time_offset_action = QAction("Adjust Time Offset...", self)
+        time_offset_action.triggered.connect(self._show_time_sync_dialog)
+        menu.addAction(time_offset_action)
+
+        menu.exec(position)
 
     def _create_new_plot_tab(self):
         """Create a new plot tab."""
@@ -868,7 +1053,16 @@ class MainWindow(QMainWindow):
         menu.exec(self.tab_widget.tabBar().mapToGlobal(position))
 
     def _save_configuration(self):
-        """Save current tab configuration to a file."""
+        """Save current tab configuration (Save command - uses current file or prompts for new)."""
+        if self.current_config_file:
+            # Save to existing file
+            self._do_save_configuration(str(self.current_config_file))
+        else:
+            # No current file, prompt for save as
+            self._save_configuration_as()
+
+    def _save_configuration_as(self):
+        """Save current tab configuration to a new file (Save As command)."""
         if not self.plot_tabs:
             QMessageBox.warning(
                 self,
@@ -880,17 +1074,28 @@ class MainWindow(QMainWindow):
         # Get default config directory
         default_dir = str(TabConfiguration.get_default_config_dir())
 
+        # Use current config file name as default if available
+        default_name = ""
+        if self.current_config_file:
+            default_name = str(self.current_config_file)
+        else:
+            default_name = str(Path(default_dir) / "my_config.mfc")
+
         # Open save dialog
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Tab Configuration",
-            default_dir,
+            "Save Tab Configuration As",
+            default_name,
             "MFViewer Config (*.mfc);;JSON Files (*.json);;All Files (*.*)"
         )
 
         if not file_path:
             return
 
+        self._do_save_configuration(file_path)
+
+    def _do_save_configuration(self, file_path: str):
+        """Perform the actual save operation."""
         # Collect tab data
         tabs_data = []
         for i in range(self.tab_widget.count()):
@@ -911,6 +1116,7 @@ class MainWindow(QMainWindow):
 
         # Save configuration
         if TabConfiguration.save_configuration(file_path, tabs_data):
+            self.current_config_file = Path(file_path)
             self.statusbar.showMessage(f"Configuration saved to {Path(file_path).name}", 3000)
         else:
             QMessageBox.critical(
@@ -921,7 +1127,9 @@ class MainWindow(QMainWindow):
 
     def _load_configuration(self):
         """Load tab configuration from a file."""
-        if not self.telemetry:
+        # Check if we have a main log
+        main_log = self.log_manager.get_main_log()
+        if not main_log:
             QMessageBox.warning(
                 self,
                 "No Data Loaded",
@@ -953,7 +1161,18 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # Create progress dialog
+        progress = QProgressDialog("Loading tab configuration...", None, 0, len(tabs_data) + 1, self)
+        progress.setWindowTitle("Loading Configuration")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        QCoreApplication.processEvents()
+
         # Clear existing tabs
+        progress.setLabelText("Clearing existing tabs...")
+        QCoreApplication.processEvents()
+
         while self.tab_widget.count() > 0:
             widget = self.tab_widget.widget(0)
             if widget in self.plot_tabs:
@@ -961,9 +1180,15 @@ class MainWindow(QMainWindow):
             self.tab_widget.removeTab(0)
             widget.deleteLater()
 
+        progress.setValue(1)
+        QCoreApplication.processEvents()
+
         # Create tabs from configuration
-        for tab_data in tabs_data:
+        for idx, tab_data in enumerate(tabs_data):
             tab_name = tab_data.get('name', f'Plot {self.tab_counter}')
+            progress.setLabelText(f"Loading tab '{tab_name}'...")
+            progress.setValue(idx + 2)
+            QCoreApplication.processEvents()
 
             # Check if this is a new PlotContainer config or legacy PlotWidget
             if 'container_config' in tab_data:
@@ -975,18 +1200,19 @@ class MainWindow(QMainWindow):
                 self._setup_cursor_sync_for_container(plot_container)
                 self.plot_tabs.append(plot_container)
                 self.tab_widget.addTab(plot_container, tab_name)
-                plot_container.load_configuration(tab_data['container_config'], self.telemetry)
+                # Use main log's telemetry for loading configuration
+                plot_container.load_configuration(tab_data['container_config'], main_log.telemetry)
             else:
                 # Legacy format with single PlotWidget
                 plot_widget = PlotWidget(units_manager=self.units_manager)
                 self.plot_tabs.append(plot_widget)
                 self.tab_widget.addTab(plot_widget, tab_name)
 
-                # Add channels to the tab
+                # Add channels to the tab from main log
                 for channel_name in tab_data.get('channels', []):
-                    channel = self.telemetry.get_channel(channel_name)
+                    channel = main_log.telemetry.get_channel(channel_name)
                     if channel:
-                        plot_widget.add_channel(channel, self.telemetry)
+                        plot_widget.add_channel(channel, main_log.telemetry)
                     else:
                         print(f"Warning: Channel '{channel_name}' not found in current log file")
 
@@ -998,6 +1224,12 @@ class MainWindow(QMainWindow):
 
         # Synchronize X-axes across all plots
         self._synchronize_all_x_axes()
+
+        # Track current config file for Save command
+        self.current_config_file = Path(file_path)
+
+        progress.setValue(len(tabs_data) + 1)
+        progress.close()
 
         self.statusbar.showMessage(f"Configuration loaded from {Path(file_path).name}", 3000)
 
@@ -1029,7 +1261,8 @@ class MainWindow(QMainWindow):
 
                 # Restore tabs after file is loaded
                 tabs_data = session_data.get('tabs', [])
-                if tabs_data and self.telemetry:
+                main_log = self.log_manager.get_main_log()
+                if tabs_data and main_log:
                     self._restore_tabs_from_data(tabs_data)
 
             except Exception as e:
@@ -1037,6 +1270,11 @@ class MainWindow(QMainWindow):
 
     def _restore_tabs_from_data(self, tabs_data: list):
         """Restore tabs from configuration data."""
+        # Get main log for restoring channels
+        main_log = self.log_manager.get_main_log()
+        if not main_log:
+            return
+
         # Clear existing tabs
         while self.tab_widget.count() > 0:
             widget = self.tab_widget.widget(0)
@@ -1059,7 +1297,8 @@ class MainWindow(QMainWindow):
                 self._setup_cursor_sync_for_container(plot_container)
                 self.plot_tabs.append(plot_container)
                 self.tab_widget.addTab(plot_container, tab_name)
-                plot_container.load_configuration(tab_data['container_config'], self.telemetry)
+                # Use main log's telemetry for loading configuration
+                plot_container.load_configuration(tab_data['container_config'], main_log.telemetry)
             else:
                 # Legacy format - convert to PlotContainer with single plot
                 plot_container = PlotContainer(
@@ -1073,11 +1312,11 @@ class MainWindow(QMainWindow):
                 # Get the first (and only) plot widget in the container
                 if plot_container.plot_widgets:
                     plot_widget = plot_container.plot_widgets[0]
-                    # Add channels
+                    # Add channels from main log
                     for channel_name in tab_data.get('channels', []):
-                        channel = self.telemetry.get_channel(channel_name)
+                        channel = main_log.telemetry.get_channel(channel_name)
                         if channel:
-                            plot_widget.add_channel(channel, self.telemetry)
+                            plot_widget.add_channel(channel, main_log.telemetry)
 
             self.tab_counter += 1
 
@@ -1204,6 +1443,22 @@ class MainWindow(QMainWindow):
             "telemetry log files from Haltech ECUs."
         )
         msg_box.exec()
+
+    def _show_time_sync_dialog(self):
+        """Show time synchronization dialog."""
+        if not self.log_manager.log_files:
+            QMessageBox.information(
+                self,
+                "No Logs Loaded",
+                "Please load at least one log file before adjusting time synchronization."
+            )
+            return
+
+        dialog = TimeSyncDialog(self.log_manager, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.changes_made:
+            # Refresh all plots to apply new time offsets
+            self._refresh_all_plots()
+            self.statusbar.showMessage("Time offsets updated", 3000)
 
     def _show_preferences(self):
         """Show preferences dialog."""

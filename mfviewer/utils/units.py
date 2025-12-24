@@ -155,11 +155,16 @@ class UnitsManager:
             # Inverse: x * 1000 (A to mA)
             self.channel_inverse_conversions[ch_name] = lambda x: x * 1000 if not np.isnan(x) else x
 
-        # Add gauge pressure conversion for Fuel Pressure and MAP
+        # Add gauge pressure conversion for Fuel Pressure and MAP sensors
         # These sensors report values with atmospheric offset that needs to be subtracted
         # Atmospheric pressure = 101.3 kPa = 1013 raw units
         # Formula: y = (x - 1013) / 10
-        gauge_pressure_channels = ['Fuel Pressure', 'Fuel - Load (MAP)']
+        gauge_pressure_channels = [
+            'Fuel Pressure',
+            'Fuel - Load (MAP)',
+            'Ignition Load (MAP)',
+            'Manifold Pressure'
+        ]
         for ch_name in gauge_pressure_channels:
             self.channel_units[ch_name] = 'kPa'
             self.channel_conversions[ch_name] = 'y = (x - 1013) / 10'
@@ -493,7 +498,14 @@ class UnitsManager:
         # This includes:
         # - Fuel Pressure: Fuel rail pressure (should show boost pressure, not absolute)
         # - Fuel - Load (MAP): Manifold absolute pressure (should show boost/vacuum relative to atmosphere)
-        gauge_pressure_channels = ['Fuel Pressure', 'Fuel - Load (MAP)']
+        # - Ignition Load (MAP): Same as Fuel - Load (MAP)
+        # - Manifold Pressure: Manifold absolute pressure
+        gauge_pressure_channels = [
+            'Fuel Pressure',
+            'Fuel - Load (MAP)',
+            'Ignition Load (MAP)',
+            'Manifold Pressure'
+        ]
         for ch_name in gauge_pressure_channels:
             self.channel_units[ch_name] = 'kPa'
             self.channel_conversions[ch_name] = 'y = (x - 1013) / 10'

@@ -18,6 +18,7 @@ class LogFile:
     is_active: bool
     display_name: str            # Filename by default
     color_offset: int            # Offset for color cycling
+    time_offset: float = 0.0     # Time offset in seconds (positive = shift right, negative = shift left)
 
 
 class LogFileManager:
@@ -117,3 +118,32 @@ class LogFileManager:
             if log.index == index:
                 return log
         return None
+
+    def set_time_offset(self, index: int, offset: float) -> None:
+        """
+        Set the time offset for a log file.
+
+        Args:
+            index: Index of the log file
+            offset: Time offset in seconds (positive = shift right/later, negative = shift left/earlier)
+        """
+        for log in self.log_files:
+            if log.index == index:
+                log.time_offset = offset
+                break
+
+    def reset_all_time_offsets(self) -> None:
+        """Reset all time offsets to zero (align all logs to start at 0)."""
+        for log in self.log_files:
+            log.time_offset = 0.0
+
+    def auto_align_to_zero(self) -> None:
+        """
+        Automatically align all logs to start at time 0.
+        This sets each log's offset so that its first timestamp becomes 0.
+        """
+        for log in self.log_files:
+            time_range = log.telemetry.get_time_range()
+            if time_range:
+                # Set offset to negate the first timestamp
+                log.time_offset = -time_range[0]

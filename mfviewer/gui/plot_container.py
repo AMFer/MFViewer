@@ -96,6 +96,9 @@ class PlotContainer(QWidget):
     def set_layout_orientation(self, orientation: Qt.Orientation):
         """Set the layout orientation (horizontal or vertical tiling) - public method for context menu."""
         self.splitter.setOrientation(orientation)
+        # Re-synchronize X-axes after layout change
+        if self.sync_callback:
+            self.sync_callback()
 
     def add_channel_to_active_plot(self, channel: ChannelInfo, telemetry: TelemetryData):
         """
@@ -132,14 +135,20 @@ class PlotContainer(QWidget):
         Returns:
             Dictionary containing plot configurations
         """
+        plots_config = []
+        for plot in self.plot_widgets:
+            plot_config = {
+                'channels': plot.get_channel_names()
+            }
+            # Include Y-axis range if available
+            y_range = plot.get_y_range()
+            if y_range:
+                plot_config['y_range'] = list(y_range)
+            plots_config.append(plot_config)
+
         return {
             'orientation': 'horizontal' if self.splitter.orientation() == Qt.Orientation.Horizontal else 'vertical',
-            'plots': [
-                {
-                    'channels': plot.get_channel_names()
-                }
-                for plot in self.plot_widgets
-            ]
+            'plots': plots_config
         }
 
     def load_configuration(self, config: Dict[str, Any], telemetry: TelemetryData):
@@ -177,6 +186,11 @@ class PlotContainer(QWidget):
                     channel = telemetry.get_channel(channel_name)
                     if channel:
                         plot_widget.add_channel(channel, telemetry)
+
+                # Restore Y-axis range if saved
+                y_range = plot_config.get('y_range')
+                if y_range and len(y_range) >= 2:
+                    plot_widget.set_y_range(y_range[0], y_range[1])
 
     def refresh_with_new_telemetry(self, new_telemetry: TelemetryData):
         """
