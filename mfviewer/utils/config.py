@@ -85,7 +85,7 @@ class TabConfiguration:
 
     @staticmethod
     def save_session(file_path: str, tabs_data: List[Dict[str, Any]], last_log_file: Optional[str] = None,
-                    last_directory: Optional[str] = None) -> bool:
+                    last_directory: Optional[str] = None, last_config_file: Optional[str] = None) -> bool:
         """
         Save session state (last file + tab config).
 
@@ -94,6 +94,7 @@ class TabConfiguration:
             tabs_data: List of tab configurations
             last_log_file: Path to the last opened log file
             last_directory: Last directory used for file dialogs
+            last_config_file: Path to the last loaded tab configuration file
 
         Returns:
             True if successful, False otherwise
@@ -103,6 +104,7 @@ class TabConfiguration:
                 'version': '1.0',
                 'last_log_file': last_log_file,
                 'last_directory': last_directory,
+                'last_config_file': last_config_file,
                 'tabs': tabs_data
             }
 
@@ -144,6 +146,7 @@ class TabConfiguration:
             return {
                 'last_log_file': session.get('last_log_file'),
                 'last_directory': session.get('last_directory'),
+                'last_config_file': session.get('last_config_file'),
                 'tabs': session.get('tabs', [])
             }
 

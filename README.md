@@ -17,6 +17,10 @@ A Python-based desktop application for viewing and analyzing telemetry log files
   - Enhanced dash patterns for better visibility
 - **Unified Legend**: Single legend entry per channel showing values from all logs side-by-side
   - Format: "RPM: 5432 | 5401 | -- rpm" (-- for missing data)
+  - Cursor-based value display works correctly across all logs
+- **Time Offset Applied to Data**: Time offsets modify the actual telemetry data
+  - Consistent behavior when adding channels via drag/drop or double-click
+  - Offsets properly preserved when replacing log files
 - **Log Management**: Easy activation/deactivation of logs without reloading from disk
   - Right-click context menu for quick log management
   - Replace log file option to swap data while preserving settings
@@ -35,6 +39,7 @@ A Python-based desktop application for viewing and analyzing telemetry log files
   - Tab close only via context menu (prevents accidental closure)
   - Horizontal and vertical plot tiling within tabs
 - **Session Persistence**: Automatically saves and restores your last workspace on startup
+  - Remembers last loaded tab configuration file
 - **Save/Load Configurations**: Save/Save As workflow for tab layouts and channel selections
   - Y-axis scaling state preserved in configurations
   - Progress dialog shows loading status
@@ -42,9 +47,12 @@ A Python-based desktop application for viewing and analyzing telemetry log files
   - Ctrl+Shift+S for Save As
 - **Channel Browser**: High-contrast dark mode tree view of all available channels grouped by type
 - **Unit Conversions**: Intelligent unit conversion system with customizable multipliers
-  - Automatic gauge pressure conversions for Fuel Pressure, Fuel Load (MAP), Ignition Load (MAP), and Manifold Pressure
+  - Automatic gauge pressure conversions for Fuel Pressure, Fuel - Load (MAP), Ignition - Load (MAP), and Manifold Pressure
+  - Percentage channels correctly scaled (raw / 10)
   - Temperature, angle, current, voltage, and AFR conversions
   - Support for multiple AFR fuel types (gasoline, ethanol, methanol, diesel)
+- **State Labels**: Human-readable state labels for channels like Idle Control State
+  - Shows both numeric value and meaning (e.g., "3 (Closed Loop)")
 - **Dark Theme**: Professional GitHub-inspired dark mode interface optimized for long viewing sessions
   - Dark title bars on Windows 11
   - Dark mode tooltips, dialogs, and progress indicators
@@ -63,7 +71,7 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 
 ### For End Users (Windows)
 
-1. Download the latest installer: `MFViewer-Setup-0.3.1.exe`
+1. Download the latest installer: `MFViewer-Setup-0.4.1.exe`
 2. Run the installer and follow the prompts
 3. Launch MFViewer from the Start Menu or Desktop shortcut
 

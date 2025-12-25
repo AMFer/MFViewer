@@ -428,6 +428,19 @@ class MainWindow(QMainWindow):
         self.new_tab_button.clicked.connect(self._create_new_plot_tab)
         corner_layout.addWidget(self.new_tab_button, alignment=Qt.AlignmentFlag.AlignVCenter)
 
+        # Add config file label
+        self.config_label = QLabel("")
+        self.config_label.setStyleSheet("""
+            QLabel {
+                color: #888888;
+                font-size: 9pt;
+                font-style: italic;
+                padding: 0 8px;
+            }
+        """)
+        self.config_label.setToolTip("Currently loaded tab configuration")
+        corner_layout.addWidget(self.config_label, alignment=Qt.AlignmentFlag.AlignVCenter)
+
         # Add logo
         logo_path = get_resource_path('Assets/MFFlatTitle.png')
         if logo_path.exists():
@@ -792,32 +805,91 @@ class MainWindow(QMainWindow):
         if not file_path:
             return  # User cancelled
 
-        # Parse new file
-        from mfviewer.data.parser import MFLogParser
-        parser = MFLogParser()
-        new_telemetry = parser.parse_file(Path(file_path))
+        # Create progress dialog
+        progress = QProgressDialog("Replacing log file...", None, 0, 0, self)
+        progress.setWindowTitle("Replacing Log File")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setMinimumWidth(400)
+        progress.setValue(0)
 
-        if new_telemetry is None:
+        # Apply dark mode styling to progress dialog
+        progress.setStyleSheet("""
+            QProgressDialog {
+                background-color: #1e1e1e;
+            }
+            QLabel {
+                color: #dcdcdc;
+                background-color: #1e1e1e;
+                padding: 10px;
+                font-size: 11pt;
+            }
+            QProgressBar {
+                background-color: #3c3c3c;
+                color: #dcdcdc;
+                border: 1px solid #3e3e42;
+                border-radius: 3px;
+                text-align: center;
+                min-height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #007acc;
+                border-radius: 2px;
+            }
+        """)
+
+        progress.show()
+        QCoreApplication.processEvents()
+
+        try:
+            # Parse new file
+            progress.setLabelText(f"Parsing {Path(file_path).name}...")
+            QCoreApplication.processEvents()
+            from mfviewer.data.parser import MFLogParser
+            parser = MFLogParser(file_path)
+            new_telemetry = parser.parse()
+
+            if new_telemetry is None:
+                progress.close()
+                QMessageBox.critical(
+                    self,
+                    "Parse Error",
+                    f"Failed to parse the selected file."
+                )
+                return
+
+            # Remove old log
+            progress.setLabelText("Removing old log...")
+            QCoreApplication.processEvents()
+            self.log_manager.remove_log_file(index)
+            self.log_list_widget.remove_log_file(index)
+
+            # Add new log at the same position
+            progress.setLabelText("Adding new log...")
+            QCoreApplication.processEvents()
+            new_log = self.log_manager.add_log_file(Path(file_path), new_telemetry, is_active=was_active)
+
+            # Apply the old time offset to the new log's telemetry data
+            if old_time_offset != 0.0:
+                self.log_manager.set_time_offset(new_log.index, old_time_offset)
+
+            # Update UI
+            progress.setLabelText("Updating UI...")
+            QCoreApplication.processEvents()
+            self.log_list_widget.add_log_file(new_log)
+            self._populate_channel_tree()
+            self._refresh_all_plots()
+
+            progress.close()
+            self.statusbar.showMessage(f"Replaced log with {Path(file_path).name}", 3000)
+
+        except Exception as e:
+            progress.close()
             QMessageBox.critical(
                 self,
-                "Parse Error",
-                f"Failed to parse the selected file."
+                "Replace Error",
+                f"Failed to replace log file: {str(e)}"
             )
-            return
-
-        # Remove old log
-        self.log_manager.remove_log_file(index)
-        self.log_list_widget.remove_log_file(index)
-
-        # Add new log at the same position
-        new_log = self.log_manager.add_log_file(Path(file_path), new_telemetry, is_active=was_active)
-        new_log.time_offset = old_time_offset
-
-        # Update UI
-        self.log_list_widget.add_log_file(new_log)
-        self._populate_channel_tree()
-        self._refresh_all_plots()
-        self.statusbar.showMessage(f"Replaced log with {Path(file_path).name}", 3000)
 
     def _refresh_all_log_files(self):
         """Reload all log files from disk and refresh plots."""
@@ -830,7 +902,6 @@ class MainWindow(QMainWindow):
             return
 
         from mfviewer.data.parser import MFLogParser
-        parser = MFLogParser()
 
         # Create progress dialog
         num_files = len(self.log_manager.log_files)
@@ -873,7 +944,8 @@ class MainWindow(QMainWindow):
             QCoreApplication.processEvents()
 
             if log_file.file_path.exists():
-                new_telemetry = parser.parse_file(log_file.file_path)
+                parser = MFLogParser(log_file.file_path)
+                new_telemetry = parser.parse()
                 if new_telemetry:
                     log_file.telemetry = new_telemetry
 
@@ -895,6 +967,13 @@ class MainWindow(QMainWindow):
             return
 
         menu = QMenu(self)
+
+        # Add Log action (same as File > Open)
+        add_log_action = QAction("Add Log...", self)
+        add_log_action.triggered.connect(self.open_file_dialog)
+        menu.addAction(add_log_action)
+
+        menu.addSeparator()
 
         # Activate/Deactivate action
         if log_file.is_active:
@@ -929,10 +1008,11 @@ class MainWindow(QMainWindow):
 
     def _create_new_plot_tab(self):
         """Create a new plot tab."""
-        # Create new plot container with sync callback and units manager
+        # Create new plot container with sync callback, units manager, and log manager
         plot_container = PlotContainer(
             sync_callback=self._synchronize_all_x_axes,
-            units_manager=self.units_manager
+            units_manager=self.units_manager,
+            log_manager=self.log_manager
         )
 
         # Set cursor synchronization for all plots in this container
@@ -1117,6 +1197,7 @@ class MainWindow(QMainWindow):
         # Save configuration
         if TabConfiguration.save_configuration(file_path, tabs_data):
             self.current_config_file = Path(file_path)
+            self._update_config_label()
             self.statusbar.showMessage(f"Configuration saved to {Path(file_path).name}", 3000)
         else:
             QMessageBox.critical(
@@ -1195,13 +1276,15 @@ class MainWindow(QMainWindow):
                 # New format with PlotContainer
                 plot_container = PlotContainer(
                     sync_callback=self._synchronize_all_x_axes,
-                    units_manager=self.units_manager
+                    units_manager=self.units_manager,
+                    log_manager=self.log_manager
                 )
-                self._setup_cursor_sync_for_container(plot_container)
                 self.plot_tabs.append(plot_container)
                 self.tab_widget.addTab(plot_container, tab_name)
                 # Use main log's telemetry for loading configuration
                 plot_container.load_configuration(tab_data['container_config'], main_log.telemetry)
+                # Set up cursor sync AFTER loading config (so all plots exist)
+                self._setup_cursor_sync_for_container(plot_container)
             else:
                 # Legacy format with single PlotWidget
                 plot_widget = PlotWidget(units_manager=self.units_manager)
@@ -1227,6 +1310,7 @@ class MainWindow(QMainWindow):
 
         # Track current config file for Save command
         self.current_config_file = Path(file_path)
+        self._update_config_label()
 
         progress.setValue(len(tabs_data) + 1)
         progress.close()
@@ -1240,6 +1324,15 @@ class MainWindow(QMainWindow):
         else:
             self.setWindowTitle("MFViewer - Motorsports Fusion Telemetry Viewer")
 
+    def _update_config_label(self):
+        """Update the config label with current configuration file name."""
+        if self.current_config_file:
+            self.config_label.setText(self.current_config_file.name)
+            self.config_label.setToolTip(f"Configuration: {self.current_config_file}")
+        else:
+            self.config_label.setText("")
+            self.config_label.setToolTip("No configuration loaded")
+
     def _restore_session(self):
         """Restore the last session if available."""
         session_file = str(TabConfiguration.get_session_file())
@@ -1252,6 +1345,12 @@ class MainWindow(QMainWindow):
         last_directory = session_data.get('last_directory')
         if last_directory:
             self.last_directory = last_directory
+
+        # Restore last config file path
+        last_config_file = session_data.get('last_config_file')
+        if last_config_file and Path(last_config_file).exists():
+            self.current_config_file = Path(last_config_file)
+            self._update_config_label()
 
         # Restore last log file
         last_log_file = session_data.get('last_log_file')
@@ -1292,20 +1391,22 @@ class MainWindow(QMainWindow):
                 # New format with PlotContainer
                 plot_container = PlotContainer(
                     sync_callback=self._synchronize_all_x_axes,
-                    units_manager=self.units_manager
+                    units_manager=self.units_manager,
+                    log_manager=self.log_manager
                 )
-                self._setup_cursor_sync_for_container(plot_container)
                 self.plot_tabs.append(plot_container)
                 self.tab_widget.addTab(plot_container, tab_name)
                 # Use main log's telemetry for loading configuration
                 plot_container.load_configuration(tab_data['container_config'], main_log.telemetry)
+                # Set up cursor sync AFTER loading config (so all plots exist)
+                self._setup_cursor_sync_for_container(plot_container)
             else:
                 # Legacy format - convert to PlotContainer with single plot
                 plot_container = PlotContainer(
                     sync_callback=self._synchronize_all_x_axes,
-                    units_manager=self.units_manager
+                    units_manager=self.units_manager,
+                    log_manager=self.log_manager
                 )
-                self._setup_cursor_sync_for_container(plot_container)
                 self.plot_tabs.append(plot_container)
                 self.tab_widget.addTab(plot_container, tab_name)
 
@@ -1317,6 +1418,9 @@ class MainWindow(QMainWindow):
                         channel = main_log.telemetry.get_channel(channel_name)
                         if channel:
                             plot_widget.add_channel(channel, main_log.telemetry)
+
+                # Set up cursor sync AFTER adding channels
+                self._setup_cursor_sync_for_container(plot_container)
 
             self.tab_counter += 1
 
@@ -1353,7 +1457,8 @@ class MainWindow(QMainWindow):
         # Save session
         session_file = str(TabConfiguration.get_session_file())
         last_log_file = str(self.current_file) if self.current_file else None
-        TabConfiguration.save_session(session_file, tabs_data, last_log_file, self.last_directory)
+        last_config_file = str(self.current_config_file) if self.current_config_file else None
+        TabConfiguration.save_session(session_file, tabs_data, last_log_file, self.last_directory, last_config_file)
 
     def closeEvent(self, event):
         """Handle window close event to save session."""
@@ -1371,20 +1476,80 @@ class MainWindow(QMainWindow):
             elif isinstance(widget, PlotWidget):
                 all_plot_widgets.append(widget)
 
-        if len(all_plot_widgets) < 2:
+        if len(all_plot_widgets) < 1:
             return
 
-        # Always use the first plot as the master (reset if needed)
-        self.master_viewbox = all_plot_widgets[0].plot_widget.getViewBox()
+        # Calculate global X-range from all plotted data
+        global_x_min = None
+        global_x_max = None
 
-        # Link all other plots to the master
-        for plot_widget in all_plot_widgets[1:]:
+        for plot_widget in all_plot_widgets:
+            for plot_info in plot_widget.plot_items.values():
+                plot_item = plot_info['plot_item']
+                x_data, _ = plot_item.getData()
+                if x_data is not None and len(x_data) > 0:
+                    x_min = x_data.min()
+                    x_max = x_data.max()
+                    if global_x_min is None or x_min < global_x_min:
+                        global_x_min = x_min
+                    if global_x_max is None or x_max > global_x_max:
+                        global_x_max = x_max
+
+        # If we have only one plot, just set its X-range
+        if len(all_plot_widgets) == 1:
+            if global_x_min is not None and global_x_max is not None:
+                all_plot_widgets[0].plot_widget.setXRange(global_x_min, global_x_max, padding=0.02)
+            self._setup_x_range_sync(all_plot_widgets)
+            return
+
+        # First, unlink any previously linked viewboxes
+        # setXLink causes issues with horizontal layouts as it makes plots share view coordinates
+        for plot_widget in all_plot_widgets:
             viewbox = plot_widget.plot_widget.getViewBox()
             try:
-                viewbox.setXLink(self.master_viewbox)
-            except RuntimeError:
-                # ViewBox was deleted, skip it
+                viewbox.setXLink(None)
+            except (RuntimeError, AttributeError):
                 pass
+
+        # Set the global X-range on ALL viewboxes
+        if global_x_min is not None and global_x_max is not None:
+            for plot_widget in all_plot_widgets:
+                plot_widget.plot_widget.setXRange(global_x_min, global_x_max, padding=0.02)
+
+        # Set up X-range change signal handling for manual sync
+        # This replaces setXLink and works correctly for both horizontal and vertical layouts
+        self._setup_x_range_sync(all_plot_widgets)
+
+    def _setup_x_range_sync(self, all_plot_widgets):
+        """Set up signal handlers for X-range synchronization across all plots."""
+        if not all_plot_widgets:
+            return
+
+        # Create a sync function that updates all plots when one changes
+        def create_x_range_sync(source_widget):
+            def sync_x_range(viewbox, x_range):
+                # Avoid recursion
+                if getattr(self, '_syncing_x_range', False):
+                    return
+                self._syncing_x_range = True
+                try:
+                    for plot_widget in all_plot_widgets:
+                        if plot_widget != source_widget:
+                            plot_widget.plot_widget.setXRange(x_range[0], x_range[1], padding=0)
+                finally:
+                    self._syncing_x_range = False
+            return sync_x_range
+
+        # Connect sigXRangeChanged signal for each plot
+        for plot_widget in all_plot_widgets:
+            viewbox = plot_widget.plot_widget.getViewBox()
+            # Disconnect any previous connections to avoid duplicates
+            try:
+                viewbox.sigXRangeChanged.disconnect()
+            except TypeError:
+                pass  # No connections to disconnect
+            # Connect new sync handler
+            viewbox.sigXRangeChanged.connect(create_x_range_sync(plot_widget))
 
     def _setup_cursor_sync_for_container(self, container: PlotContainer):
         """

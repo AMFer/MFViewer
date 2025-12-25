@@ -38,6 +38,21 @@ class UnitsManager:
             # Add more mappings as needed
         }
 
+        # State mappings for channels that use integer codes
+        # Maps channel_name -> {integer_value -> state_label}
+        self.state_mappings: Dict[str, Dict[int, str]] = {
+            'Idle Control State': {
+                0: 'Off',
+                1: 'Open Loop',
+                2: 'Decel',
+                3: 'Closed Loop',
+                4: 'Stall Offset',
+                5: 'Post Start',
+                6: 'Hold',
+                7: 'Calibration',
+            },
+        }
+
         # Common unit conversions
         self.unit_conversions = {
             'K': {  # Temperature from Kelvin
@@ -162,7 +177,7 @@ class UnitsManager:
         gauge_pressure_channels = [
             'Fuel Pressure',
             'Fuel - Load (MAP)',
-            'Ignition Load (MAP)',
+            'Ignition - Load (MAP)',
             'Manifold Pressure'
         ]
         for ch_name in gauge_pressure_channels:
@@ -498,12 +513,12 @@ class UnitsManager:
         # This includes:
         # - Fuel Pressure: Fuel rail pressure (should show boost pressure, not absolute)
         # - Fuel - Load (MAP): Manifold absolute pressure (should show boost/vacuum relative to atmosphere)
-        # - Ignition Load (MAP): Same as Fuel - Load (MAP)
+        # - Ignition - Load (MAP): Same as Fuel - Load (MAP)
         # - Manifold Pressure: Manifold absolute pressure
         gauge_pressure_channels = [
             'Fuel Pressure',
             'Fuel - Load (MAP)',
-            'Ignition Load (MAP)',
+            'Ignition - Load (MAP)',
             'Manifold Pressure'
         ]
         for ch_name in gauge_pressure_channels:
@@ -638,6 +653,27 @@ class UnitsManager:
         """Set unit preferences from a dictionary."""
         self.unit_preferences = preferences.copy()
 
+    def get_state_label(self, channel_name: str, value: float) -> Optional[str]:
+        """
+        Get the state label for a channel value if it has a state mapping.
+
+        Args:
+            channel_name: Name of the channel
+            value: The numeric value to look up
+
+        Returns:
+            State label string if mapping exists, None otherwise
+        """
+        if channel_name in self.state_mappings:
+            # Round to nearest integer for state lookup
+            int_value = int(round(value))
+            return self.state_mappings[channel_name].get(int_value)
+        return None
+
+    def has_state_mapping(self, channel_name: str) -> bool:
+        """Check if a channel has a state mapping defined."""
+        return channel_name in self.state_mappings
+
     def _apply_type_based_conversion(self, values: np.ndarray, channel_type: str) -> np.ndarray:
         """
         Apply standard conversion based on channel type.
@@ -649,6 +685,7 @@ class UnitsManager:
         - Current_mA_as_A: raw / 1000 (e.g., 165 -> 0.165 A)
         - BatteryVoltage: raw / 1000 (e.g., 13412 -> 13.412 V)
         - Angle: raw / 10 (e.g., 150 -> 15.0 degrees)
+        - Percentage: raw / 10 (e.g., 497 -> 49.7 %)
 
         Args:
             values: Raw values from CSV
@@ -658,14 +695,14 @@ class UnitsManager:
             Converted values
         """
         # Standard conversions for common types
-        if channel_type in ['Pressure', 'AbsPressure', 'Temperature', 'Angle']:
+        if channel_type in ['Pressure', 'AbsPressure', 'Temperature', 'Angle', 'Percentage']:
             # Standard: divide by 10
             return np.array([v / 10 if not np.isnan(v) else v for v in values])
         elif channel_type in ['Current_mA_as_A', 'BatteryVoltage', 'AFR']:
             # Current, Voltage, and AFR: divide by 1000
             return np.array([v / 1000 if not np.isnan(v) else v for v in values])
         else:
-            # No conversion for other types (EngineSpeed, Percentage, Speed, etc. are already correct)
+            # No conversion for other types (EngineSpeed, Speed, etc. are already correct)
             return values
 
     def apply_channel_conversion(self, channel_name: str, values: np.ndarray, channel_type: str = None) -> np.ndarray:

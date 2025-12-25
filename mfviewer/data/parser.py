@@ -273,6 +273,20 @@ class TelemetryData:
             return (self.data.index.min(), self.data.index.max())
         return (0.0, 0.0)
 
+    def apply_time_offset(self, offset: float) -> None:
+        """
+        Apply a time offset to all data by shifting the index.
+
+        This modifies the data in place - all channels will have the offset applied
+        since they share the same time index.
+
+        Args:
+            offset: Time offset in seconds (positive = shift right/later, negative = shift left/earlier)
+        """
+        if self.data.index.name == 'Seconds' and offset != 0.0:
+            # Shift the index by adding the offset
+            self.data.index = self.data.index + offset
+
     def get_statistics(self, channel_name: str) -> Optional[Dict[str, float]]:
         """
         Get statistics for a channel.

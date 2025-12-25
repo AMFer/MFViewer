@@ -78,6 +78,9 @@ class PlotWidget(QWidget):
         # Container reference for context menu access
         self.container = None
 
+        # Log manager reference for multi-log support
+        self.log_manager = None
+
         # Cursor synchronization
         self.cursor_line = None
         self.cursor_x_position = None
@@ -270,7 +273,7 @@ class PlotWidget(QWidget):
             telemetry: Telemetry data object
             active_index: Index in active logs list (0 for main log)
             log_file_path: Path to the log file (optional)
-            time_offset: Time offset to apply in seconds (optional)
+            time_offset: DEPRECATED - time offset is now applied directly to telemetry data
         """
         # Check if already plotted with tuple key
         plot_key = (channel.name, active_index)
@@ -285,8 +288,8 @@ class PlotWidget(QWidget):
         if data_series is None:
             return
 
-        # Get time data (index) and apply time offset
-        time_data = data_series.index.to_numpy() + time_offset
+        # Get time data (index) - time offset is already applied to telemetry data
+        time_data = data_series.index.to_numpy()
         values = data_series.to_numpy()
 
         # Apply unit conversions if units_manager is available
@@ -371,12 +374,12 @@ class PlotWidget(QWidget):
             channel = log_file.telemetry.get_channel(channel_name)
 
             if channel:
+                # Time offset is already applied to telemetry data, no need to pass it
                 self.add_channel(
                     channel=channel,
                     telemetry=log_file.telemetry,
                     active_index=active_index,
-                    log_file_path=log_file.file_path,
-                    time_offset=log_file.time_offset
+                    log_file_path=log_file.file_path
                 )
             # Skip logs that don't have this channel
 
@@ -385,9 +388,26 @@ class PlotWidget(QWidget):
         Auto-scale the plot to fit all data.
         If 'Exclude Outliers' is checked, removes outliers on a per-channel basis before scaling.
         For Percentage type channels, always use 0-100 range.
+        Auto-scales both X and Y axes; global sync will harmonize X-ranges across plots.
         """
         if not self.plot_items:
             return
+
+        # Calculate X-range from all plotted data
+        x_min = None
+        x_max = None
+        for plot_info in self.plot_items.values():
+            plot_item = plot_info['plot_item']
+            x_data = plot_item.xData
+            if x_data is not None and len(x_data) > 0:
+                if x_min is None or x_data.min() < x_min:
+                    x_min = x_data.min()
+                if x_max is None or x_data.max() > x_max:
+                    x_max = x_data.max()
+
+        # Set X-range if we have data
+        if x_min is not None and x_max is not None:
+            self.plot_widget.setXRange(x_min, x_max, padding=0.02)
 
         # Check if all channels are Percentage type - if so, use fixed 0-100 range
         all_percentage = all(
@@ -396,7 +416,6 @@ class PlotWidget(QWidget):
         )
         if all_percentage:
             self.plot_widget.setYRange(0, 100, padding=0)
-            self.plot_widget.enableAutoRange(axis='x')
             return
 
         if self.exclude_outliers:
@@ -444,13 +463,10 @@ class PlotWidget(QWidget):
                 # Add 5% padding
                 padding = (overall_max - overall_min) * 0.05
                 self.plot_widget.setYRange(overall_min - padding, overall_max + padding, padding=0)
-
-                # Auto-range X axis
-                self.plot_widget.enableAutoRange(axis='x')
                 return
 
-        # If not excluding outliers or no data, just use standard auto-range
-        self.plot_widget.autoRange()
+        # If not excluding outliers or no data, auto-range Y only
+        self.plot_widget.enableAutoRange(axis='y')
 
     def remove_channel(self, channel_name: str, log_index: Optional[int] = None):
         """
@@ -554,7 +570,7 @@ class PlotWidget(QWidget):
             if data_series is None:
                 continue
 
-            # Get time data (index)
+            # Get time data (index) - time offset is already applied to telemetry data
             time_data = data_series.index.to_numpy()
             values = data_series.to_numpy()
 
@@ -610,7 +626,32 @@ class PlotWidget(QWidget):
 
     def refresh_with_new_units(self):
         """Refresh all plotted channels with new unit conversions."""
-        if not self.telemetry or not self.plot_items:
+        if not self.plot_items:
+            return
+
+        # For multi-log scenarios, use log_manager if available
+        if self.log_manager:
+            # Collect unique channel names
+            channel_names = set(key[0] for key in self.plot_items.keys())
+            cursor_pos = self.cursor_x_position
+            cursor_active = self.cursor_active
+
+            # Clear all and re-add from all active logs
+            self.clear_all_plots()
+
+            for channel_name in channel_names:
+                self.add_channel_from_all_logs(channel_name, self.log_manager)
+
+            # Auto-range to fit all data
+            self._auto_scale()
+
+            # Restore cursor position if it was active
+            if cursor_pos is not None and cursor_active:
+                self.set_cursor_position(cursor_pos)
+            return
+
+        # Fallback for single-log mode
+        if not self.telemetry:
             return
 
         # Store current plot info with tuple keys
@@ -636,7 +677,7 @@ class PlotWidget(QWidget):
             if data_series is None:
                 continue
 
-            # Get time data (index)
+            # Get time data (index) - time offset is already applied to telemetry data
             time_data = data_series.index.to_numpy()
             values = data_series.to_numpy()
 
@@ -718,12 +759,18 @@ class PlotWidget(QWidget):
             event.acceptProposedAction()
 
     def dropEvent(self, event):
-        """Handle drop event - add channel to plot."""
+        """Handle drop event - add channel to plot from all active logs."""
         if event.mimeData().hasText():
             # The text contains the channel name
             channel_name = event.mimeData().text()
 
-            if self.telemetry:
+            # Use log_manager to add from all active logs if available
+            if self.log_manager:
+                self.add_channel_from_all_logs(channel_name, self.log_manager)
+                event.acceptProposedAction()
+            elif self.telemetry:
+                # Fallback to single telemetry (legacy support)
+                # Time offset is already applied to telemetry data
                 channel = self.telemetry.get_channel(channel_name)
                 if channel:
                     self.add_channel(channel, self.telemetry)
@@ -814,18 +861,16 @@ class PlotWidget(QWidget):
         Args:
             x_pos: X position for the cursor
         """
-        if not self.plot_items:
-            return
-
         self.cursor_x_position = x_pos
 
-        # Show and position cursor line
+        # Always show and position cursor line (even if no data)
         if self.cursor_line:
             self.cursor_line.setPos(x_pos)
             self.cursor_line.setVisible(True)
 
-        # Update legend with values at cursor position
-        self._update_legend_with_cursor_values(x_pos)
+        # Update legend with values at cursor position (only if we have data)
+        if self.plot_items:
+            self._update_legend_with_cursor_values(x_pos)
 
     def _update_legend_with_cursor_values(self, x_pos: float):
         """
@@ -868,7 +913,7 @@ class PlotWidget(QWidget):
                                 unit_str = f" {unit}"
 
                     # Get value at cursor position
-                    value_str = self._get_value_at_position(plot_item, x_pos)
+                    value_str = self._get_value_at_position(plot_item, x_pos, channel_name)
                     values_list.append(value_str if value_str else '--')
                 else:
                     # Channel doesn't exist in this log
@@ -881,13 +926,14 @@ class PlotWidget(QWidget):
             else:
                 label.setText(f"{channel_name}{unit_str}")
 
-    def _get_value_at_position(self, plot_item, x_pos: float) -> Optional[str]:
+    def _get_value_at_position(self, plot_item, x_pos: float, channel_name: str = None) -> Optional[str]:
         """
         Get interpolated value at a given x position.
 
         Args:
             plot_item: The plot item to get value from
             x_pos: X position to interpolate value at
+            channel_name: Optional channel name for state label lookup
 
         Returns:
             Formatted value string or None
@@ -928,6 +974,12 @@ class PlotWidget(QWidget):
         # Format value
         if np.isnan(value):
             return None
+
+        # Check for state mapping (e.g., Idle Control State)
+        if channel_name and self.units_manager:
+            state_label = self.units_manager.get_state_label(channel_name, value)
+            if state_label:
+                return f"{int(round(value))} ({state_label})"
 
         # Format to appropriate precision
         if abs(value) >= 1000:
