@@ -36,7 +36,24 @@
       "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/gui/mainwindow.py)",
       "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/gui/mainwindow.py mfviewer/utils/units.py)",
       "Bash(cat:*)",
-      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/widgets/log_list_widget.py)"
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/widgets/log_list_widget.py)",
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/gui/plot_widget.py)",
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/widgets/log_list_widget.py mfviewer/gui/mainwindow.py)",
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/gui/plot_container.py)",
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/gui/mainwindow.py mfviewer/gui/plot_widget.py)",
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/gui/plot_widget.py mfviewer/gui/mainwindow.py)",
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/utils/config.py mfviewer/gui/mainwindow.py)",
+      "Bash(\"venv/Scripts/python.exe\" -c:*)",
+      "Bash(\"venv/Scripts/python.exe\" debug_legend.py)",
+      "Bash(\"venv/Scripts/python.exe\" debug_legend2.py)",
+      "Bash(\"venv/Scripts/python.exe\" debug_legend3.py)",
+      "Bash(\"venv/Scripts/python.exe\" test_legend_issue.py)",
+      "Bash(\"venv/Scripts/python.exe\" test_legend_multilog.py)",
+      "Bash(\"venv/Scripts/python.exe\" test_legend_units_refresh.py)",
+      "Bash(del debug_legend.py debug_legend2.py debug_legend3.py test_legend_issue.py test_legend_multilog.py test_legend_units_refresh.py)",
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/utils/units.py mfviewer/gui/plot_widget.py)",
+      "Bash(tree:*)",
+      "Bash(del \"c:\\\\Repos\\\\MFViewer\\\\mfviewer\\\\gui\\\\time_sync_dialog.py\")"
     ]
   }
 }

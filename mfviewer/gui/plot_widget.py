@@ -263,8 +263,7 @@ class PlotWidget(QWidget):
         self.plot_widget.setYRange(y_min, y_max, padding=0)
 
     def add_channel(self, channel: ChannelInfo, telemetry: TelemetryData,
-                    active_index: int = 0, log_file_path: Optional[Path] = None,
-                    time_offset: float = 0.0):
+                    active_index: int = 0, log_file_path: Optional[Path] = None):
         """
         Add a channel to the plot.
 
@@ -273,7 +272,6 @@ class PlotWidget(QWidget):
             telemetry: Telemetry data object
             active_index: Index in active logs list (0 for main log)
             log_file_path: Path to the log file (optional)
-            time_offset: DEPRECATED - time offset is now applied directly to telemetry data
         """
         # Check if already plotted with tuple key
         plot_key = (channel.name, active_index)

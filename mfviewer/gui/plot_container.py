@@ -13,12 +13,13 @@ from mfviewer.data.parser import ChannelInfo, TelemetryData
 class PlotContainer(QWidget):
     """Container widget that holds multiple tiled plot widgets."""
 
-    def __init__(self, sync_callback=None, units_manager=None):
+    def __init__(self, sync_callback=None, units_manager=None, log_manager=None):
         super().__init__()
         self.plot_widgets: List[PlotWidget] = []
         self.telemetry: TelemetryData = None
         self.sync_callback = sync_callback  # Callback to sync all plots globally
         self.units_manager = units_manager  # Units manager for conversions
+        self.log_manager = log_manager  # Log manager for multi-log support
         self._setup_ui()
 
     def _setup_ui(self):
@@ -54,6 +55,10 @@ class PlotContainer(QWidget):
         # If we have telemetry data, set it on the new plot
         if self.telemetry:
             plot_widget.telemetry = self.telemetry
+
+        # Set log manager for multi-log support
+        if self.log_manager:
+            plot_widget.log_manager = self.log_manager
 
         # Default exclude outliers to True
         plot_widget.exclude_outliers = True
@@ -122,7 +127,12 @@ class PlotContainer(QWidget):
             focused_plot = self.plot_widgets[-1]
 
         if focused_plot:
-            focused_plot.add_channel(channel, telemetry)
+            # Use log_manager if available to add from all logs
+            if self.log_manager:
+                focused_plot.add_channel_from_all_logs(channel.name, self.log_manager)
+            else:
+                # Fallback to single telemetry - time offset is already applied to data
+                focused_plot.add_channel(channel, telemetry)
 
     def get_all_plot_widgets(self) -> List[PlotWidget]:
         """Get all plot widgets in this container."""
@@ -181,16 +191,24 @@ class PlotContainer(QWidget):
                 self._add_plot()
                 plot_widget = self.plot_widgets[-1]
 
-                # Add channels
+                # Add channels from all active logs
                 for channel_name in plot_config.get('channels', []):
-                    channel = telemetry.get_channel(channel_name)
-                    if channel:
-                        plot_widget.add_channel(channel, telemetry)
+                    if self.log_manager:
+                        plot_widget.add_channel_from_all_logs(channel_name, self.log_manager)
+                    else:
+                        # Fallback to single telemetry
+                        channel = telemetry.get_channel(channel_name)
+                        if channel:
+                            plot_widget.add_channel(channel, telemetry)
 
                 # Restore Y-axis range if saved
                 y_range = plot_config.get('y_range')
                 if y_range and len(y_range) >= 2:
                     plot_widget.set_y_range(y_range[0], y_range[1])
+
+        # Synchronize X-axes after loading configuration
+        if self.sync_callback:
+            self.sync_callback()
 
     def refresh_with_new_telemetry(self, new_telemetry: TelemetryData):
         """

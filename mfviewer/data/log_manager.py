@@ -18,7 +18,6 @@ class LogFile:
     is_active: bool
     display_name: str            # Filename by default
     color_offset: int            # Offset for color cycling
-    time_offset: float = 0.0     # Time offset in seconds (positive = shift right, negative = shift left)
 
 
 class LogFileManager:
@@ -118,49 +117,3 @@ class LogFileManager:
             if log.index == index:
                 return log
         return None
-
-    def set_time_offset(self, index: int, new_offset: float) -> None:
-        """
-        Set the time offset for a log file.
-
-        This applies the offset directly to the telemetry data, so all channels
-        will have the correct time values.
-
-        Args:
-            index: Index of the log file
-            new_offset: Time offset in seconds (positive = shift right/later, negative = shift left/earlier)
-        """
-        for log in self.log_files:
-            if log.index == index:
-                # Calculate the delta from current offset to new offset
-                delta = new_offset - log.time_offset
-                if delta != 0.0:
-                    # Apply the delta to the telemetry data
-                    log.telemetry.apply_time_offset(delta)
-                    log.time_offset = new_offset
-                break
-
-    def reset_all_time_offsets(self) -> None:
-        """Reset all time offsets to use original timestamps."""
-        for log in self.log_files:
-            if log.time_offset != 0.0:
-                # Reverse the current offset
-                log.telemetry.apply_time_offset(-log.time_offset)
-                log.time_offset = 0.0
-
-    def auto_align_to_zero(self) -> None:
-        """
-        Automatically align all logs to start at time 0.
-        This applies an offset to each log's telemetry data so that its first timestamp becomes 0.
-        """
-        for log in self.log_files:
-            time_range = log.telemetry.get_time_range()
-            if time_range:
-                # Calculate offset to negate the first timestamp
-                new_offset = -time_range[0]
-                # Calculate delta from current offset
-                delta = new_offset - log.time_offset
-                if delta != 0.0:
-                    # Apply the delta to the telemetry data
-                    log.telemetry.apply_time_offset(delta)
-                    log.time_offset = new_offset

@@ -1,0 +1,30 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Activate venv",
+            "type": "shell",
+            "windows": {
+                "command": "${workspaceFolder}\\venv\\Scripts\\activate.bat"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Run MFViewer",
+            "type": "shell",
+            "windows": {
+                "command": "${workspaceFolder}\\venv\\Scripts\\python.exe",
+                "args": ["run.py"]
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            },
+            "problemMatcher": []
+        }
+    ]
+}

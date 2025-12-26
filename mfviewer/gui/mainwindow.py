@@ -20,7 +20,6 @@ from mfviewer.data.log_manager import LogFileManager
 from mfviewer.gui.plot_widget import PlotWidget
 from mfviewer.gui.plot_container import PlotContainer
 from mfviewer.gui.preferences_dialog import PreferencesDialog
-from mfviewer.gui.time_sync_dialog import TimeSyncDialog
 from mfviewer.utils.config import TabConfiguration
 from mfviewer.utils.units import UnitsManager
 from mfviewer.widgets.log_list_widget import LogListWidget
@@ -552,14 +551,6 @@ class MainWindow(QMainWindow):
         # Tools menu
         tools_menu = menubar.addMenu("&Tools")
 
-        # Time synchronization
-        time_sync_action = QAction("&Time Synchronization...", self)
-        time_sync_action.setShortcut(QKeySequence("Ctrl+Shift+T"))
-        time_sync_action.triggered.connect(self._show_time_sync_dialog)
-        tools_menu.addAction(time_sync_action)
-
-        tools_menu.addSeparator()
-
         preferences_action = QAction("&Preferences...", self)
         preferences_action.setShortcut(QKeySequence("Ctrl+,"))
         preferences_action.triggered.connect(self._show_preferences)
@@ -658,11 +649,6 @@ class MainWindow(QMainWindow):
                 telemetry=telemetry,
                 is_active=True
             )
-
-            # Auto-align all logs to start at time 0
-            progress.setLabelText("Aligning time offsets...")
-            QCoreApplication.processEvents()
-            self.log_manager.auto_align_to_zero()
 
             # Update UI
             progress.setLabelText("Updating UI...")
@@ -789,7 +775,6 @@ class MainWindow(QMainWindow):
 
         # Store current state
         was_active = log_file.is_active
-        old_time_offset = log_file.time_offset
 
         # Get starting directory
         start_dir = str(log_file.file_path.parent) if log_file.file_path.exists() else ""
@@ -868,10 +853,6 @@ class MainWindow(QMainWindow):
             progress.setLabelText("Adding new log...")
             QCoreApplication.processEvents()
             new_log = self.log_manager.add_log_file(Path(file_path), new_telemetry, is_active=was_active)
-
-            # Apply the old time offset to the new log's telemetry data
-            if old_time_offset != 0.0:
-                self.log_manager.set_time_offset(new_log.index, old_time_offset)
 
             # Update UI
             progress.setLabelText("Updating UI...")
@@ -996,13 +977,6 @@ class MainWindow(QMainWindow):
         replace_action = QAction("Replace Log File...", self)
         replace_action.triggered.connect(lambda: self._replace_log_file(index))
         menu.addAction(replace_action)
-
-        menu.addSeparator()
-
-        # Time offset action
-        time_offset_action = QAction("Adjust Time Offset...", self)
-        time_offset_action.triggered.connect(self._show_time_sync_dialog)
-        menu.addAction(time_offset_action)
 
         menu.exec(position)
 
@@ -1608,22 +1582,6 @@ class MainWindow(QMainWindow):
             "telemetry log files from Haltech ECUs."
         )
         msg_box.exec()
-
-    def _show_time_sync_dialog(self):
-        """Show time synchronization dialog."""
-        if not self.log_manager.log_files:
-            QMessageBox.information(
-                self,
-                "No Logs Loaded",
-                "Please load at least one log file before adjusting time synchronization."
-            )
-            return
-
-        dialog = TimeSyncDialog(self.log_manager, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.changes_made:
-            # Refresh all plots to apply new time offsets
-            self._refresh_all_plots()
-            self.statusbar.showMessage("Time offsets updated", 3000)
 
     def _show_preferences(self):
         """Show preferences dialog."""
