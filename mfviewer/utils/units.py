@@ -38,9 +38,9 @@ class UnitsManager:
             # Add more mappings as needed
         }
 
-        # State mappings for channels that use integer codes
+        # Default state mappings for channels that use integer codes
         # Maps channel_name -> {integer_value -> state_label}
-        self.state_mappings: Dict[str, Dict[int, str]] = {
+        self.default_state_mappings: Dict[str, Dict[int, str]] = {
             'Idle Control State': {
                 0: 'Off',
                 1: 'Open Loop',
@@ -52,6 +52,8 @@ class UnitsManager:
                 7: 'Calibration',
             },
         }
+        # User-defined state mappings (loaded from file, merged with defaults)
+        self.state_mappings: Dict[str, Dict[int, str]] = self.default_state_mappings.copy()
 
         # Common unit conversions
         self.unit_conversions = {
@@ -673,6 +675,21 @@ class UnitsManager:
     def has_state_mapping(self, channel_name: str) -> bool:
         """Check if a channel has a state mapping defined."""
         return channel_name in self.state_mappings
+
+    def get_state_mappings(self) -> Dict[str, Dict[int, str]]:
+        """Get all state mappings as a dictionary."""
+        return {ch: mappings.copy() for ch, mappings in self.state_mappings.items()}
+
+    def set_state_mappings(self, mappings: Dict[str, Dict[int, str]]):
+        """Set state mappings from a dictionary (replaces all current mappings)."""
+        self.state_mappings.clear()
+        for channel, channel_mappings in mappings.items():
+            self.state_mappings[channel] = channel_mappings.copy()
+
+    def reset_state_mappings_to_defaults(self):
+        """Reset state mappings to the built-in defaults."""
+        self.state_mappings = {ch: mappings.copy()
+                               for ch, mappings in self.default_state_mappings.items()}
 
     def _apply_type_based_conversion(self, values: np.ndarray, channel_type: str) -> np.ndarray:
         """

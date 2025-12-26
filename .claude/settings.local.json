@@ -53,7 +53,8 @@
       "Bash(del debug_legend.py debug_legend2.py debug_legend3.py test_legend_issue.py test_legend_multilog.py test_legend_units_refresh.py)",
       "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/utils/units.py mfviewer/gui/plot_widget.py)",
       "Bash(tree:*)",
-      "Bash(del \"c:\\\\Repos\\\\MFViewer\\\\mfviewer\\\\gui\\\\time_sync_dialog.py\")"
+      "Bash(del \"c:\\\\Repos\\\\MFViewer\\\\mfviewer\\\\gui\\\\time_sync_dialog.py\")",
+      "Bash(\"venv/Scripts/python.exe\" -m py_compile mfviewer/gui/channel_text_mapping_dialog.py mfviewer/utils/units.py mfviewer/gui/mainwindow.py)"
     ]
   }
 }

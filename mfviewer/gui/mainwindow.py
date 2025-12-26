@@ -20,6 +20,7 @@ from mfviewer.data.log_manager import LogFileManager
 from mfviewer.gui.plot_widget import PlotWidget
 from mfviewer.gui.plot_container import PlotContainer
 from mfviewer.gui.preferences_dialog import PreferencesDialog
+from mfviewer.gui.channel_text_mapping_dialog import ChannelTextMappingDialog
 from mfviewer.utils.config import TabConfiguration
 from mfviewer.utils.units import UnitsManager
 from mfviewer.widgets.log_list_widget import LogListWidget
@@ -85,6 +86,7 @@ class MainWindow(QMainWindow):
         # Initialize units manager
         self.units_manager = UnitsManager()
         self._load_unit_preferences()
+        self._load_text_mappings()
 
         self.setWindowTitle("MFViewer - Motorsports Fusion Telemetry Viewer")
         self.setMinimumSize(1200, 800)
@@ -550,6 +552,14 @@ class MainWindow(QMainWindow):
 
         # Tools menu
         tools_menu = menubar.addMenu("&Tools")
+
+        # Channel text mapping
+        text_mapping_action = QAction("Channel &Text Mapping...", self)
+        text_mapping_action.setShortcut(QKeySequence("Ctrl+T"))
+        text_mapping_action.triggered.connect(self._show_channel_text_mapping)
+        tools_menu.addAction(text_mapping_action)
+
+        tools_menu.addSeparator()
 
         preferences_action = QAction("&Preferences...", self)
         preferences_action.setShortcut(QKeySequence("Ctrl+,"))
@@ -1607,6 +1617,24 @@ class MainWindow(QMainWindow):
 
             self.statusbar.showMessage("Preferences updated", 3000)
 
+    def _show_channel_text_mapping(self):
+        """Show channel text mapping dialog."""
+        # Get channel names from loaded logs
+        channel_names = []
+        main_log = self.log_manager.get_main_log()
+        if main_log:
+            channel_names = main_log.telemetry.get_channel_names()
+
+        dialog = ChannelTextMappingDialog(self.units_manager, channel_names, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Save mappings to persistent file
+            self._save_text_mappings()
+
+            # Refresh all plots to show new text labels
+            self._refresh_all_plots()
+
+            self.statusbar.showMessage("Channel text mappings updated", 3000)
+
     def _refresh_all_plots(self):
         """Refresh all plots in all tabs with current active logs."""
         for i in range(self.tab_widget.count()):
@@ -1664,3 +1692,37 @@ class MainWindow(QMainWindow):
                 json.dump(data, f, indent=2)
         except Exception as e:
             print(f"Error saving unit preferences: {e}")
+
+    def _load_text_mappings(self):
+        """Load channel text mappings from file."""
+        mappings_file = TabConfiguration.get_default_config_dir() / 'text_mappings.json'
+        if mappings_file.exists():
+            try:
+                import json
+                with open(mappings_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                if isinstance(data, dict) and 'mappings' in data:
+                    # Convert string keys back to int
+                    mappings = {}
+                    for channel, channel_mappings in data['mappings'].items():
+                        mappings[channel] = {int(k): v for k, v in channel_mappings.items()}
+                    self.units_manager.set_state_mappings(mappings)
+            except Exception as e:
+                print(f"Error loading text mappings: {e}")
+
+    def _save_text_mappings(self):
+        """Save channel text mappings to file."""
+        mappings_file = TabConfiguration.get_default_config_dir() / 'text_mappings.json'
+        mappings_file.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            import json
+            data = {
+                'version': '1.0',
+                'mappings': self.units_manager.get_state_mappings()
+            }
+            with open(mappings_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"Error saving text mappings: {e}")
