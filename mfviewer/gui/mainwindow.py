@@ -495,6 +495,9 @@ class MainWindow(QMainWindow):
         # Enable renaming on double-click (connect once here, not in _create_new_plot_tab)
         self.tab_widget.tabBarDoubleClicked.connect(self._rename_tab)
 
+        # Connect tab change to refresh stale tabs (performance optimization)
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
         # Create first plot tab (don't auto-rename the initial tab)
         self._create_new_plot_tab(auto_rename=False)
 
@@ -1358,13 +1361,17 @@ class MainWindow(QMainWindow):
                 self.plot_tabs.append(plot_widget)
                 self.tab_widget.addTab(plot_widget, tab_name)
 
-                # Add channels to the tab from main log
-                for channel_name in tab_data.get('channels', []):
+                # Add channels to the tab from main log (defer auto-scale until all added)
+                channels_to_add = tab_data.get('channels', [])
+                for channel_name in channels_to_add:
                     channel = main_log.telemetry.get_channel(channel_name)
                     if channel:
-                        plot_widget.add_channel(channel, main_log.telemetry)
+                        plot_widget.add_channel(channel, main_log.telemetry, defer_auto_scale=True)
                     else:
                         print(f"Warning: Channel '{channel_name}' not found in current log file")
+                # Single auto-scale after all channels added
+                if channels_to_add:
+                    plot_widget._auto_scale()
 
             self.tab_counter += 1
 
@@ -1480,11 +1487,15 @@ class MainWindow(QMainWindow):
                 # Get the first (and only) plot widget in the container
                 if plot_container.plot_widgets:
                     plot_widget = plot_container.plot_widgets[0]
-                    # Add channels from main log
-                    for channel_name in tab_data.get('channels', []):
+                    # Add channels from main log (defer auto-scale until all added)
+                    channels_to_add = tab_data.get('channels', [])
+                    for channel_name in channels_to_add:
                         channel = main_log.telemetry.get_channel(channel_name)
                         if channel:
-                            plot_widget.add_channel(channel, main_log.telemetry)
+                            plot_widget.add_channel(channel, main_log.telemetry, defer_auto_scale=True)
+                    # Single auto-scale after all channels added
+                    if channels_to_add:
+                        plot_widget._auto_scale()
 
                 # Set up cursor sync AFTER adding channels
                 self._setup_cursor_sync_for_container(plot_container)
@@ -1719,9 +1730,45 @@ class MainWindow(QMainWindow):
             self.statusbar.showMessage("Channel text mappings updated", 3000)
 
     def _refresh_all_plots(self):
-        """Refresh all plots in all tabs with current active logs."""
+        """
+        Refresh plots with current active logs.
+
+        Performance optimization: Only refreshes the currently visible tab immediately.
+        Other tabs are marked as needing refresh and will be updated when switched to.
+        """
+        current_idx = self.tab_widget.currentIndex()
+
         for i in range(self.tab_widget.count()):
             widget = self.tab_widget.widget(i)
+
+            if i == current_idx:
+                # Refresh current tab immediately
+                if isinstance(widget, PlotContainer):
+                    for plot_widget in widget.plot_widgets:
+                        plot_widget.refresh_with_multi_log(self.log_manager)
+                elif isinstance(widget, PlotWidget):
+                    widget.refresh_with_multi_log(self.log_manager)
+            else:
+                # Mark hidden tabs as needing refresh
+                if isinstance(widget, PlotContainer):
+                    widget.needs_refresh = True
+                elif isinstance(widget, PlotWidget):
+                    widget.needs_refresh = True
+
+    def _on_tab_changed(self, index: int):
+        """
+        Handle tab change - refresh stale tabs if needed.
+
+        Args:
+            index: Index of the newly selected tab
+        """
+        widget = self.tab_widget.widget(index)
+        if widget is None:
+            return
+
+        # Check if tab needs refresh (was marked stale)
+        if getattr(widget, 'needs_refresh', False):
+            widget.needs_refresh = False
             if isinstance(widget, PlotContainer):
                 for plot_widget in widget.plot_widgets:
                     plot_widget.refresh_with_multi_log(self.log_manager)
@@ -1729,16 +1776,29 @@ class MainWindow(QMainWindow):
                 widget.refresh_with_multi_log(self.log_manager)
 
     def _refresh_all_plots_with_new_units(self):
-        """Refresh all plots with new unit preferences."""
-        # Refresh all plot tabs with new unit conversions
+        """
+        Refresh plots with new unit preferences.
+
+        Performance optimization: Only refreshes the currently visible tab immediately.
+        Other tabs are marked as needing refresh and will be updated when switched to.
+        """
+        current_idx = self.tab_widget.currentIndex()
+
         for i in range(self.tab_widget.count()):
             plot_tab = self.tab_widget.widget(i)
 
-            # Handle both PlotContainer and legacy PlotWidget
-            if isinstance(plot_tab, PlotContainer):
-                plot_tab.refresh_with_new_units()
-            elif isinstance(plot_tab, PlotWidget):
-                plot_tab.refresh_with_new_units()
+            if i == current_idx:
+                # Refresh current tab immediately
+                if isinstance(plot_tab, PlotContainer):
+                    plot_tab.refresh_with_new_units()
+                elif isinstance(plot_tab, PlotWidget):
+                    plot_tab.refresh_with_new_units()
+            else:
+                # Mark hidden tabs as needing refresh
+                if isinstance(plot_tab, PlotContainer):
+                    plot_tab.needs_refresh = True
+                elif isinstance(plot_tab, PlotWidget):
+                    plot_tab.needs_refresh = True
 
     def _load_unit_preferences(self):
         """Load unit preferences from file."""

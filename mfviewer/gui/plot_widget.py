@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QListWidget, QListWidgetItem, QSplitter, QCheckBox, QMenu
 )
-from PyQt6.QtCore import Qt, QEvent
+from PyQt6.QtCore import Qt, QEvent, QTimer
 from PyQt6.QtGui import QMouseEvent, QAction, QPen
 import pyqtgraph as pg
 import numpy as np
@@ -107,6 +107,128 @@ def compute_statistics_gpu(values: np.ndarray) -> dict:
     }
 
 
+def batch_interpolate_gpu(x_arrays: List[np.ndarray], y_arrays: List[np.ndarray],
+                          x_pos: float) -> List[Optional[float]]:
+    """
+    Batch interpolation of multiple channels at a given x position using GPU.
+
+    Uses CuPy for vectorized searchsorted and interpolation across all channels
+    simultaneously. Falls back to CPU for small numbers of channels or when
+    GPU is not available.
+
+    Args:
+        x_arrays: List of x data arrays (time data)
+        y_arrays: List of y data arrays (channel values)
+        x_pos: X position to interpolate at
+
+    Returns:
+        List of interpolated values (None for channels with insufficient data)
+    """
+    n_channels = len(x_arrays)
+
+    # Only use GPU for 5+ channels where batch processing provides benefit
+    # The GPU transfer overhead is not worth it for fewer channels
+    if not CUPY_AVAILABLE or n_channels < 5:
+        return batch_interpolate_cpu(x_arrays, y_arrays, x_pos)
+
+    try:
+        results = []
+
+        # Batch process on GPU
+        # Transfer x_pos once
+        x_pos_gpu = cp.float64(x_pos)
+
+        for x_data, y_data in zip(x_arrays, y_arrays):
+            if x_data is None or y_data is None or len(x_data) == 0:
+                results.append(None)
+                continue
+
+            # Handle boundary cases before GPU transfer
+            if x_pos < x_data[0]:
+                results.append(float(y_data[0]))
+                continue
+            elif x_pos > x_data[-1]:
+                results.append(float(y_data[-1]))
+                continue
+
+            # Transfer to GPU and perform vectorized searchsorted
+            x_gpu = cp.asarray(x_data)
+            y_gpu = cp.asarray(y_data)
+
+            # Find insertion point
+            idx = int(cp.searchsorted(x_gpu, x_pos_gpu).get())
+
+            if idx == 0:
+                results.append(float(y_data[0]))
+            elif idx >= len(x_data):
+                results.append(float(y_data[-1]))
+            else:
+                # Linear interpolation on GPU
+                x0 = float(x_gpu[idx - 1].get())
+                x1 = float(x_gpu[idx].get())
+                y0 = float(y_gpu[idx - 1].get())
+                y1 = float(y_gpu[idx].get())
+
+                if x1 == x0:
+                    results.append(y0)
+                else:
+                    t = (x_pos - x0) / (x1 - x0)
+                    results.append(y0 + t * (y1 - y0))
+
+        return results
+
+    except Exception:
+        # Fall back to CPU on any GPU error
+        return batch_interpolate_cpu(x_arrays, y_arrays, x_pos)
+
+
+def batch_interpolate_cpu(x_arrays: List[np.ndarray], y_arrays: List[np.ndarray],
+                          x_pos: float) -> List[Optional[float]]:
+    """
+    CPU fallback for batch interpolation.
+
+    Args:
+        x_arrays: List of x data arrays
+        y_arrays: List of y data arrays
+        x_pos: X position to interpolate at
+
+    Returns:
+        List of interpolated values
+    """
+    results = []
+
+    for x_data, y_data in zip(x_arrays, y_arrays):
+        if x_data is None or y_data is None or len(x_data) == 0:
+            results.append(None)
+            continue
+
+        # Handle boundary cases
+        if x_pos < x_data[0]:
+            results.append(float(y_data[0]))
+        elif x_pos > x_data[-1]:
+            results.append(float(y_data[-1]))
+        else:
+            # Find insertion point
+            idx = np.searchsorted(x_data, x_pos)
+
+            if idx == 0:
+                results.append(float(y_data[0]))
+            elif idx >= len(x_data):
+                results.append(float(y_data[-1]))
+            else:
+                # Linear interpolation
+                x0, x1 = x_data[idx - 1], x_data[idx]
+                y0, y1 = y_data[idx - 1], y_data[idx]
+
+                if x1 == x0:
+                    results.append(y0)
+                else:
+                    t = (x_pos - x0) / (x1 - x0)
+                    results.append(y0 + t * (y1 - y0))
+
+    return results
+
+
 # Line styles for multi-log comparison (up to 5 logs)
 # Using Qt.PenStyle for basic style, then custom dash patterns for visibility
 LOG_LINE_STYLES = [
@@ -171,6 +293,27 @@ class PlotWidget(QWidget):
         self.cursor_line = None
         self.cursor_x_position = None
         self.cursor_callback = None  # Callback to sync cursor across plots
+
+        # Legend update debouncing for smooth cursor interaction
+        self._legend_update_timer = QTimer()
+        self._legend_update_timer.setSingleShot(True)
+        self._legend_update_timer.setInterval(33)  # ~30 FPS
+        self._legend_update_timer.timeout.connect(self._do_legend_update)
+        self._pending_cursor_x = None
+
+        # Cache for legend label references (channel_name -> label widget)
+        # Provides O(1) legend lookup instead of O(n) iteration
+        self._legend_label_cache: Dict[str, object] = {}
+
+        # Cache for channel color assignments (channel_name -> color tuple)
+        # Provides O(1) color lookup instead of O(n) sorted set operations
+        self._channel_color_cache: Dict[str, tuple] = {}
+
+        # LOD (Level of Detail) tracking for adaptive resolution
+        # Stores full resolution data references for zoom-in capability
+        self._full_resolution_refs: Dict[Tuple[str, int], Tuple[ChannelInfo, 'TelemetryData']] = {}
+        self._current_lod_factors: Dict[Tuple[str, int], Optional[int]] = {}  # Current LOD per plot
+        self._lod_update_pending = False  # Debounce LOD updates
 
         # Enable drag and drop
         self.setAcceptDrops(True)
@@ -351,7 +494,8 @@ class PlotWidget(QWidget):
         self.plot_widget.setYRange(y_min, y_max, padding=0)
 
     def add_channel(self, channel: ChannelInfo, telemetry: TelemetryData,
-                    active_index: int = 0, log_file_path: Optional[Path] = None):
+                    active_index: int = 0, log_file_path: Optional[Path] = None,
+                    defer_auto_scale: bool = False):
         """
         Add a channel to the plot.
 
@@ -360,6 +504,7 @@ class PlotWidget(QWidget):
             telemetry: Telemetry data object
             active_index: Index in active logs list (0 for main log)
             log_file_path: Path to the log file (optional)
+            defer_auto_scale: If True, skip auto-scale (caller will handle it)
         """
         # Check if already plotted with tuple key
         plot_key = (channel.name, active_index)
@@ -369,10 +514,28 @@ class PlotWidget(QWidget):
 
         self.telemetry = telemetry
 
-        # Get channel data
-        data_series = telemetry.get_channel_data(channel.name)
+        # Determine optimal LOD based on data size and view width
+        # This provides faster initial plotting for large datasets
+        view_width = max(self.plot_widget.width(), 800)  # Minimum 800 pixels
+        data_points = len(telemetry.data) if telemetry.data is not None else 0
+
+        # Calculate optimal downsample factor
+        # Target ~2x pixels for good quality, use LOD if data >> pixels
+        lod_factor = None
+        if data_points > view_width * 4:
+            # Use pre-computed LOD data if available
+            optimal_factor = telemetry.get_optimal_downsample_factor(data_points, view_width * 2)
+            if optimal_factor and optimal_factor in telemetry.downsampled_data:
+                lod_factor = optimal_factor
+
+        # Get channel data with optional LOD
+        data_series = telemetry.get_channel_data(channel.name, lod_factor)
         if data_series is None:
             return
+
+        # Store full resolution reference for zoom-in capability
+        self._full_resolution_refs[plot_key] = (channel, telemetry)
+        self._current_lod_factors[plot_key] = lod_factor
 
         # Get time data (index) - time offset is already applied to telemetry data
         time_data = data_series.index.to_numpy()
@@ -391,26 +554,23 @@ class PlotWidget(QWidget):
 
         # Choose color based on channel name only (same color across all logs)
         # This way all instances of "RPM" have the same color regardless of log
-        colors = [
-            (255, 90, 90),     # Bright Red
-            (90, 200, 255),    # Bright Blue
-            (100, 255, 100),   # Bright Green
-            (255, 200, 90),    # Bright Orange
-            (220, 120, 255),   # Bright Purple
-            (90, 240, 220),    # Bright Cyan
-            (255, 100, 200),   # Bright Pink
-            (240, 240, 100),   # Bright Yellow
-        ]
-        # Get existing unique channels (by name only)
-        existing_channel_names = sorted(set(key[0] for key in self.plot_items.keys()))
-        # Check if this channel already has a color assigned
-        if channel.name in existing_channel_names:
-            # Reuse the same color as existing entries for this channel
-            color_idx = existing_channel_names.index(channel.name)
+        # Use cached color if available (O(1) lookup vs O(n) sorted set operations)
+        if channel.name in self._channel_color_cache:
+            color = self._channel_color_cache[channel.name]
         else:
-            # New channel - assign next color
-            color_idx = len(existing_channel_names)
-        color = colors[color_idx % len(colors)]
+            colors = [
+                (255, 90, 90),     # Bright Red
+                (90, 200, 255),    # Bright Blue
+                (100, 255, 100),   # Bright Green
+                (255, 200, 90),    # Bright Orange
+                (220, 120, 255),   # Bright Purple
+                (90, 240, 220),    # Bright Cyan
+                (255, 100, 200),   # Bright Pink
+                (240, 240, 100),   # Bright Yellow
+            ]
+            color_idx = len(self._channel_color_cache)
+            color = colors[color_idx % len(colors)]
+            self._channel_color_cache[channel.name] = color
 
         # Get line style based on log position (different line styles for each log)
         line_style = get_line_style_for_log(active_index)
@@ -432,6 +592,14 @@ class PlotWidget(QWidget):
             name=legend_name  # None means no legend entry
         )
 
+        # Cache the legend label reference for O(1) lookup during cursor updates
+        if legend_name and self.legend:
+            # Find the label we just added (it's the last one for this channel)
+            for sample, label in self.legend.items:
+                if label.text == legend_name:
+                    self._legend_label_cache[channel.name] = label
+                    break
+
         # Store reference with new structure
         self.plot_items[plot_key] = {
             'plot_item': plot_item,
@@ -442,8 +610,9 @@ class PlotWidget(QWidget):
             'line_style': line_style
         }
 
-        # Auto-range to fit all data
-        self._auto_scale()
+        # Auto-range to fit all data (unless caller defers it for batch operations)
+        if not defer_auto_scale:
+            self._auto_scale()
 
     def add_channel_from_all_logs(self, channel_name: str, log_manager):
         """
@@ -463,18 +632,26 @@ class PlotWidget(QWidget):
         # Remove from pending since we're plotting it now
         self.pending_channels.discard(channel_name)
 
+        added_any = False
         for active_index, log_file in enumerate(active_logs):
             channel = log_file.telemetry.get_channel(channel_name)
 
             if channel:
                 # Time offset is already applied to telemetry data, no need to pass it
+                # Defer auto-scale until all logs are added for this channel
                 self.add_channel(
                     channel=channel,
                     telemetry=log_file.telemetry,
                     active_index=active_index,
-                    log_file_path=log_file.file_path
+                    log_file_path=log_file.file_path,
+                    defer_auto_scale=True
                 )
+                added_any = True
             # Skip logs that don't have this channel
+
+        # Single auto-scale after adding from all logs
+        if added_any:
+            self._auto_scale()
 
     def _auto_scale(self):
         """
@@ -576,14 +753,26 @@ class PlotWidget(QWidget):
             if plot_key in self.plot_items:
                 self.plot_widget.removeItem(self.plot_items[plot_key]['plot_item'])
                 del self.plot_items[plot_key]
+            # Clean up LOD tracking for this specific plot
+            self._full_resolution_refs.pop(plot_key, None)
+            self._current_lod_factors.pop(plot_key, None)
+            # If no more instances of this channel exist, clean up caches
+            if not any(k[0] == channel_name for k in self.plot_items.keys()):
+                self._legend_label_cache.pop(channel_name, None)
+                self._channel_color_cache.pop(channel_name, None)
         else:
             # Remove all logs
             keys_to_remove = [k for k in self.plot_items.keys() if k[0] == channel_name]
             for key in keys_to_remove:
                 self.plot_widget.removeItem(self.plot_items[key]['plot_item'])
                 del self.plot_items[key]
-            # Also remove from pending channels
+                # Clean up LOD tracking
+                self._full_resolution_refs.pop(key, None)
+                self._current_lod_factors.pop(key, None)
+            # Also remove from pending channels and caches
             self.pending_channels.discard(channel_name)
+            self._legend_label_cache.pop(channel_name, None)
+            self._channel_color_cache.pop(channel_name, None)
 
     def clear_all_plots(self):
         """Clear all visual plots but preserve pending channel configuration."""
@@ -595,6 +784,14 @@ class PlotWidget(QWidget):
         self.plot_widget.clear()
         self.plot_items.clear()
         # Note: pending_channels is intentionally NOT cleared here
+
+        # Clear caches (legend labels will be recreated, colors should persist)
+        self._legend_label_cache.clear()
+        # Note: _channel_color_cache is NOT cleared to maintain consistent colors across refreshes
+
+        # Clear LOD tracking
+        self._full_resolution_refs.clear()
+        self._current_lod_factors.clear()
 
         # Re-add grid and legend with dark theme
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
@@ -736,8 +933,13 @@ class PlotWidget(QWidget):
             # Clear all and re-add from all active logs
             self.clear_all_plots()
 
-            for channel_name in channel_names:
-                self.add_channel_from_all_logs(channel_name, self.log_manager)
+            # Batch rendering: disable updates during bulk channel additions
+            self.plot_widget.setUpdatesEnabled(False)
+            try:
+                for channel_name in channel_names:
+                    self.add_channel_from_all_logs(channel_name, self.log_manager)
+            finally:
+                self.plot_widget.setUpdatesEnabled(True)
 
             # Auto-range to fit all data
             self._auto_scale()
@@ -829,6 +1031,7 @@ class PlotWidget(QWidget):
     def refresh_with_multi_log(self, log_manager):
         """
         Refresh all plotted channels from current active logs.
+        Uses batch rendering optimization to minimize repaints.
 
         Args:
             log_manager: LogFileManager instance
@@ -859,9 +1062,14 @@ class PlotWidget(QWidget):
             # Clear pending channels since we're about to plot them
             self.pending_channels.clear()
 
-            # Re-plot from active logs
-            for channel_name in channel_names:
-                self.add_channel_from_all_logs(channel_name, log_manager)
+            # Batch rendering: disable updates during bulk channel additions
+            self.plot_widget.setUpdatesEnabled(False)
+            try:
+                # Re-plot from active logs (each add_channel_from_all_logs defers auto-scale)
+                for channel_name in channel_names:
+                    self.add_channel_from_all_logs(channel_name, log_manager)
+            finally:
+                self.plot_widget.setUpdatesEnabled(True)
 
             # Restore cursor state if it was active
             if was_cursor_active and cursor_pos is not None and self.plot_items:
@@ -978,6 +1186,7 @@ class PlotWidget(QWidget):
         """
         Set cursor position and update legend with values.
         Snaps cursor to data boundaries if clicked outside the data range.
+        Legend updates are debounced for smooth cursor interaction.
 
         Args:
             x_pos: X position for the cursor
@@ -989,14 +1198,22 @@ class PlotWidget(QWidget):
 
         self.cursor_x_position = snapped_x_pos
 
-        # Always show and position cursor line (even if no data)
+        # Always show and position cursor line immediately (even if no data)
         if self.cursor_line:
             self.cursor_line.setPos(snapped_x_pos)
             self.cursor_line.setVisible(True)
 
-        # Update legend with values at cursor position (only if we have data)
+        # Debounce legend updates for smooth cursor dragging
+        # The cursor line moves immediately, but legend values update at ~30 FPS
         if self.plot_items:
-            self._update_legend_with_cursor_values(snapped_x_pos)
+            self._pending_cursor_x = snapped_x_pos
+            if not self._legend_update_timer.isActive():
+                self._legend_update_timer.start()
+
+    def _do_legend_update(self):
+        """Perform the debounced legend update."""
+        if self._pending_cursor_x is not None:
+            self._update_legend_with_cursor_values(self._pending_cursor_x)
 
     def _snap_to_data_range(self, x_pos: float) -> float:
         """
@@ -1038,6 +1255,8 @@ class PlotWidget(QWidget):
     def _update_legend_with_cursor_values(self, x_pos: float):
         """
         Update legend to show values at cursor position from all logs.
+        Uses cached legend label references for O(1) lookup performance.
+        Uses GPU batch interpolation for 5+ channels when CuPy is available.
 
         Args:
             x_pos: X position to read values from
@@ -1048,12 +1267,53 @@ class PlotWidget(QWidget):
         # Find the maximum log index to know how many value slots to show
         max_log_index = max((key[1] for key in self.plot_items.keys()), default=0)
 
-        # Update legend labels with values from all logs
-        for sample, label in self.legend.items:
-            # Find the channel name from the current label text
-            # Split on ':' to separate name from value
-            parts = label.text.split(':', 1)
-            channel_name = parts[0].strip()
+        # Get unique channel names that have plots
+        unique_channels = list(set(key[0] for key in self.plot_items.keys()))
+
+        # Collect all plot items for batch interpolation
+        # Structure: list of (channel_name, log_idx, plot_item, channel)
+        all_plot_data = []
+        for channel_name in unique_channels:
+            for log_idx in range(max_log_index + 1):
+                plot_key = (channel_name, log_idx)
+                if plot_key in self.plot_items:
+                    plot_info = self.plot_items[plot_key]
+                    all_plot_data.append((
+                        channel_name,
+                        log_idx,
+                        plot_info['plot_item'],
+                        plot_info['channel']
+                    ))
+
+        # Extract arrays for batch interpolation
+        x_arrays = []
+        y_arrays = []
+        for _, _, plot_item, _ in all_plot_data:
+            x_arrays.append(plot_item.xData)
+            y_arrays.append(plot_item.yData)
+
+        # Perform batch interpolation (GPU if available and 5+ channels)
+        interpolated_values = batch_interpolate_gpu(x_arrays, y_arrays, x_pos)
+
+        # Build a map of (channel_name, log_idx) -> interpolated_value
+        value_map = {}
+        for i, (channel_name, log_idx, _, _) in enumerate(all_plot_data):
+            value_map[(channel_name, log_idx)] = interpolated_values[i]
+
+        # Update legend labels using cached references where available
+        for channel_name in unique_channels:
+            # Try cached label first (O(1)), fall back to iteration if not cached
+            label = self._legend_label_cache.get(channel_name)
+            if label is None:
+                # Fallback: find label by iterating (and cache it for next time)
+                for sample, lbl in self.legend.items:
+                    parts = lbl.text.split(':', 1)
+                    if parts[0].strip() == channel_name:
+                        label = lbl
+                        self._legend_label_cache[channel_name] = label
+                        break
+                if label is None:
+                    continue
 
             # Collect values from all logs for this channel
             values_list = []
@@ -1064,7 +1324,6 @@ class PlotWidget(QWidget):
                 plot_key = (channel_name, log_idx)
                 if plot_key in self.plot_items:
                     plot_info = self.plot_items[plot_key]
-                    plot_item = plot_info['plot_item']
                     channel = plot_info['channel']
 
                     # Get unit from first available channel
@@ -1075,9 +1334,13 @@ class PlotWidget(QWidget):
                             if unit:
                                 unit_str = f" {unit}"
 
-                    # Get value at cursor position
-                    value_str = self._get_value_at_position(plot_item, x_pos, channel_name)
-                    values_list.append(value_str if value_str else '--')
+                    # Get pre-interpolated value
+                    value = value_map.get(plot_key)
+                    if value is not None and not np.isnan(value):
+                        value_str = self._format_value(value, channel_name)
+                        values_list.append(value_str)
+                    else:
+                        values_list.append('--')
                 else:
                     # Channel doesn't exist in this log
                     values_list.append('--')
@@ -1088,6 +1351,31 @@ class PlotWidget(QWidget):
                 label.setText(f"{channel_name}: {values_display}{unit_str}")
             else:
                 label.setText(f"{channel_name}{unit_str}")
+
+    def _format_value(self, value: float, channel_name: str = None) -> str:
+        """
+        Format a numeric value for display in the legend.
+
+        Args:
+            value: Numeric value to format
+            channel_name: Optional channel name for state label lookup
+
+        Returns:
+            Formatted value string
+        """
+        # Check for state mapping (e.g., Idle Control State)
+        if channel_name and self.units_manager:
+            state_label = self.units_manager.get_state_label(channel_name, value)
+            if state_label:
+                return f"{int(round(value))} ({state_label})"
+
+        # Format to appropriate precision
+        if abs(value) >= 1000:
+            return f"{value:.1f}"
+        elif abs(value) >= 10:
+            return f"{value:.2f}"
+        else:
+            return f"{value:.3f}"
 
     def _get_value_at_position(self, plot_item, x_pos: float, channel_name: str = None) -> Optional[str]:
         """

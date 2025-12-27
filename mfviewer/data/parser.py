@@ -63,14 +63,33 @@ class ChannelInfo:
     name: str
     channel_id: int
     data_type: str
-    min_value: float
-    max_value: float
+    min_value: float  # Display min from header (configuration)
+    max_value: float  # Display max from header (configuration)
     column_index: int
+    # Pre-computed actual data statistics (computed at parse time for faster auto-scale)
+    data_min: Optional[float] = None
+    data_max: Optional[float] = None
+    data_q1: Optional[float] = None  # 25th percentile for outlier detection
+    data_q3: Optional[float] = None  # 75th percentile for outlier detection
 
     @property
     def display_range(self) -> Tuple[float, float]:
         """Get the display range as a tuple (min, max)."""
         return (self.min_value, self.max_value)
+
+    @property
+    def data_range(self) -> Optional[Tuple[float, float]]:
+        """Get the actual data range as a tuple (min, max), or None if not computed."""
+        if self.data_min is not None and self.data_max is not None:
+            return (self.data_min, self.data_max)
+        return None
+
+    @property
+    def iqr(self) -> Optional[float]:
+        """Get the interquartile range (Q3 - Q1), or None if not computed."""
+        if self.data_q1 is not None and self.data_q3 is not None:
+            return self.data_q3 - self.data_q1
+        return None
 
     def __repr__(self) -> str:
         return f"Channel({self.name}, ID={self.channel_id}, type={self.data_type})"
@@ -148,7 +167,12 @@ class ParquetCache:
                     'data_type': ch.data_type,
                     'min_value': ch.min_value,
                     'max_value': ch.max_value,
-                    'column_index': ch.column_index
+                    'column_index': ch.column_index,
+                    # Pre-computed statistics
+                    'data_min': ch.data_min,
+                    'data_max': ch.data_max,
+                    'data_q1': ch.data_q1,
+                    'data_q3': ch.data_q3,
                 }
                 for ch in channels
             ]
@@ -260,6 +284,10 @@ class MFLogParser:
         # Process time column with vectorized operations
         self.progress_callback(70, "Processing time column...")
         self._process_time_column_vectorized()
+
+        # Pre-compute channel statistics for faster auto-scale
+        self.progress_callback(80, "Computing channel statistics...")
+        self._compute_channel_statistics()
 
         # Pre-compute downsampled data for LOD
         self.progress_callback(85, "Computing downsampled data...")
@@ -458,6 +486,37 @@ class MFLogParser:
 
         # Set Seconds as index for time-series operations
         self.data.set_index('Seconds', inplace=True)
+
+    def _compute_channel_statistics(self):
+        """
+        Pre-compute statistics for each channel at parse time.
+
+        This computes min, max, Q1, Q3 for each channel, which are used by
+        the plot widget for faster auto-scale operations. Computing these
+        once during parsing avoids redundant calculations during plotting.
+        """
+        if self.data is None:
+            return
+
+        for channel in self.channels:
+            if channel.name not in self.data.columns:
+                continue
+
+            try:
+                # Get channel data as numpy array
+                values = self.data[channel.name].to_numpy()
+
+                # Remove NaN values for statistics
+                clean_values = values[~np.isnan(values)]
+
+                if len(clean_values) > 0:
+                    channel.data_min = float(np.min(clean_values))
+                    channel.data_max = float(np.max(clean_values))
+                    channel.data_q1 = float(np.percentile(clean_values, 25))
+                    channel.data_q3 = float(np.percentile(clean_values, 75))
+            except Exception:
+                # If statistics computation fails, leave as None
+                pass
 
     def _compute_downsampled_data(self):
         """

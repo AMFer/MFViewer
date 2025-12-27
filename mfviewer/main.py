@@ -12,7 +12,7 @@ from PyQt6.QtGui import QPixmap, QPalette, QColor, QPainter, QFont
 from mfviewer.gui.mainwindow import MainWindow
 
 # Version number
-VERSION = "0.3.1"
+VERSION = "0.5.1"
 
 
 def get_resource_path(relative_path: str) -> Path:

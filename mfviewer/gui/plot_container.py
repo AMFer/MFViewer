@@ -192,14 +192,19 @@ class PlotContainer(QWidget):
                 plot_widget = self.plot_widgets[-1]
 
                 # Add channels from all active logs
-                for channel_name in plot_config.get('channels', []):
+                channels_to_add = plot_config.get('channels', [])
+                for channel_name in channels_to_add:
                     if self.log_manager:
                         plot_widget.add_channel_from_all_logs(channel_name, self.log_manager)
                     else:
-                        # Fallback to single telemetry
+                        # Fallback to single telemetry (defer auto-scale for batch loading)
                         channel = telemetry.get_channel(channel_name)
                         if channel:
-                            plot_widget.add_channel(channel, telemetry)
+                            plot_widget.add_channel(channel, telemetry, defer_auto_scale=True)
+
+                # Single auto-scale after all channels added (for fallback path)
+                if channels_to_add and not self.log_manager:
+                    plot_widget._auto_scale()
 
                 # Restore Y-axis range if saved
                 y_range = plot_config.get('y_range')

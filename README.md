@@ -4,13 +4,21 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 
 ## Features
 
-### Performance Optimizations (v0.5.0)
+### Performance Optimizations (v0.5.1)
 - **Polars Backend**: Uses Polars for 10-100x faster CSV loading compared to pandas
 - **Parquet Caching**: Automatically caches parsed files as Parquet for instant repeat loads
 - **Background Loading**: File loading runs in a background thread with progress feedback - UI stays responsive
 - **Float32 Storage**: Uses 32-bit floats for 50% memory reduction on large files
 - **GPU Acceleration** (optional): CuPy support for faster array operations on NVIDIA GPUs
 - **Graceful Fallbacks**: Automatically uses best available backend (cuDF → Polars → pandas)
+- **UI Responsiveness Optimizations**:
+  - Legend update debouncing at 30 FPS for smooth cursor interaction
+  - Visible-tab-only refresh - hidden tabs refresh lazily when activated
+  - Deferred auto-scale batches multiple channel additions
+  - O(1) legend and color caching for instant lookups
+  - Pre-computed channel statistics at parse time
+  - Level of Detail (LOD) for faster initial plotting of large datasets
+  - GPU-accelerated batch interpolation for legend values (5+ channels)
 
 ### Multi-Log Comparison
 - **Load Multiple Logs**: Compare data from multiple runs simultaneously
@@ -79,7 +87,7 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 
 ### For End Users (Windows)
 
-1. Download the latest installer: `MFViewer-Setup-0.5.0.exe`
+1. Download the latest installer: `MFViewer-Setup-0.5.1.exe`
 2. Run the installer and follow the prompts
 3. Launch MFViewer from the Start Menu or Desktop shortcut
 
