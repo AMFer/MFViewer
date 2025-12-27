@@ -1,0 +1,60 @@
+# Conda environment for MFViewer with full GPU acceleration
+#
+# This environment includes NVIDIA CUDA-accelerated libraries:
+# - cuDF: GPU-accelerated CSV parsing (5-20x faster than CPU)
+# - CuPy: GPU-accelerated array operations
+#
+# Prerequisites:
+# - NVIDIA GPU with compute capability 6.0+ (Pascal or newer)
+# - NVIDIA driver 525.60.13+
+# - CUDA Toolkit 12.x
+#
+# Installation:
+#   conda env create -f environment-gpu.yml
+#   conda activate mfviewer-gpu
+#
+# To run the application:
+#   python run.py
+
+name: mfviewer-gpu
+
+channels:
+  - rapidsai
+  - conda-forge
+  - nvidia
+  - defaults
+
+dependencies:
+  # Python version
+  - python=3.11
+
+  # CUDA runtime
+  - cuda-version=12.0
+
+  # RAPIDS cuDF for GPU-accelerated DataFrame operations
+  - cudf=24.02
+
+  # GPU array operations
+  - cupy
+
+  # Install remaining packages via pip
+  - pip
+  - pip:
+    # GUI Framework
+    - PyQt6>=6.6.0
+
+    # Data Processing
+    - pandas>=2.0.0
+    - numpy>=1.24.0
+    - polars>=0.20.0
+    - pyarrow>=14.0.0
+
+    # Plotting
+    - pyqtgraph>=0.13.0
+
+    # Data Export
+    - openpyxl>=3.1.0
+
+    # Configuration
+    - PyYAML>=6.0
+    - platformdirs>=4.0.0

@@ -12,10 +12,10 @@ from PyQt6.QtWidgets import (
     QStatusBar, QTreeWidget, QTreeWidgetItem,
     QLabel, QPushButton, QInputDialog, QMenu, QDialog, QProgressDialog
 )
-from PyQt6.QtCore import Qt, QSize, QCoreApplication
+from PyQt6.QtCore import Qt, QSize, QCoreApplication, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QPalette, QColor, QCloseEvent, QPixmap
 
-from mfviewer.data.parser import MFLogParser, TelemetryData
+from mfviewer.data.parser import MFLogParser, TelemetryData, get_parser_backend
 from mfviewer.data.log_manager import LogFileManager
 from mfviewer.gui.plot_widget import PlotWidget
 from mfviewer.gui.plot_container import PlotContainer
@@ -24,6 +24,42 @@ from mfviewer.gui.channel_text_mapping_dialog import ChannelTextMappingDialog
 from mfviewer.utils.config import TabConfiguration
 from mfviewer.utils.units import UnitsManager
 from mfviewer.widgets.log_list_widget import LogListWidget
+
+
+class FileLoaderThread(QThread):
+    """
+    Background thread for non-blocking file loading.
+
+    This keeps the UI responsive while parsing large CSV files.
+    Uses the optimized parser with GPU/Polars acceleration when available.
+    """
+    # Signals
+    progress = pyqtSignal(int, str)  # (percent, message)
+    finished = pyqtSignal(object)    # TelemetryData
+    error = pyqtSignal(str)          # Error message
+
+    def __init__(self, file_path: str, parent=None):
+        super().__init__(parent)
+        self.file_path = file_path
+
+    def run(self):
+        """Parse the file in a background thread."""
+        try:
+            # Create parser with progress callback
+            def progress_callback(percent: int, message: str):
+                self.progress.emit(percent, message)
+
+            parser = MFLogParser(
+                self.file_path,
+                use_cache=True,
+                progress_callback=progress_callback
+            )
+
+            telemetry = parser.parse()
+            self.finished.emit(telemetry)
+
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 def get_resource_path(relative_path: str) -> Path:
@@ -456,8 +492,11 @@ class MainWindow(QMainWindow):
 
         self.tab_widget.setCornerWidget(corner_widget, Qt.Corner.TopRightCorner)
 
-        # Create first plot tab
-        self._create_new_plot_tab()
+        # Enable renaming on double-click (connect once here, not in _create_new_plot_tab)
+        self.tab_widget.tabBarDoubleClicked.connect(self._rename_tab)
+
+        # Create first plot tab (don't auto-rename the initial tab)
+        self._create_new_plot_tab(auto_rename=False)
 
         self.splitter.addWidget(self.tab_widget)
 
@@ -561,7 +600,7 @@ class MainWindow(QMainWindow):
 
         tools_menu.addSeparator()
 
-        preferences_action = QAction("&Preferences...", self)
+        preferences_action = QAction("&Units...", self)
         preferences_action.setShortcut(QKeySequence("Ctrl+,"))
         preferences_action.triggered.connect(self._show_preferences)
         tools_menu.addAction(preferences_action)
@@ -599,22 +638,32 @@ class MainWindow(QMainWindow):
 
     def open_file(self, file_path: str):
         """
-        Open and parse a telemetry log file.
+        Open and parse a telemetry log file using background thread.
 
         Args:
             file_path: Path to the log file
         """
-        # Create progress dialog
-        progress = QProgressDialog("Loading telemetry data...", "Cancel", 0, 0, self)
-        progress.setWindowTitle("Loading Log File")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setMinimumWidth(400)
-        progress.setValue(0)
-        progress.setCancelButton(None)  # Remove cancel button for now
+        # Store file path for use in callbacks
+        self._loading_file_path = Path(file_path)
+        self.current_file = self._loading_file_path
+
+        # Create progress dialog with determinate progress bar
+        self._progress_dialog = QProgressDialog(
+            f"Loading {self._loading_file_path.name}...",
+            None,  # No cancel button
+            0, 100,
+            self
+        )
+        self._progress_dialog.setWindowTitle(f"Loading Log File ({get_parser_backend()})")
+        self._progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        self._progress_dialog.setMinimumDuration(0)
+        self._progress_dialog.setMinimumWidth(450)
+        self._progress_dialog.setValue(0)
+        self._progress_dialog.setAutoClose(False)
+        self._progress_dialog.setAutoReset(False)
 
         # Apply dark mode styling to progress dialog
-        progress.setStyleSheet("""
+        self._progress_dialog.setStyleSheet("""
             QProgressDialog {
                 background-color: #1e1e1e;
             }
@@ -638,58 +687,87 @@ class MainWindow(QMainWindow):
             }
         """)
 
-        progress.show()
-        QCoreApplication.processEvents()
+        self._progress_dialog.show()
+        self.statusbar.showMessage(f"Loading {self._loading_file_path.name} ({get_parser_backend()})...")
 
+        # Create and start the loader thread
+        self._loader_thread = FileLoaderThread(file_path, self)
+        self._loader_thread.progress.connect(self._on_load_progress)
+        self._loader_thread.finished.connect(self._on_load_finished)
+        self._loader_thread.error.connect(self._on_load_error)
+        self._loader_thread.start()
+
+    def _on_load_progress(self, percent: int, message: str):
+        """Handle progress updates from the loader thread."""
         try:
-            self.statusbar.showMessage(f"Loading {Path(file_path).name}...")
-            self.current_file = Path(file_path)
+            if hasattr(self, '_progress_dialog') and self._progress_dialog is not None:
+                self._progress_dialog.setValue(percent)
+                self._progress_dialog.setLabelText(f"{message}")
+        except (RuntimeError, AttributeError):
+            # Dialog may have been deleted or is invalid
+            pass
 
-            # Parse the file
-            progress.setLabelText("Parsing log file...")
-            QCoreApplication.processEvents()
-            parser = MFLogParser(file_path)
-            telemetry = parser.parse()
-
+    def _on_load_finished(self, telemetry: TelemetryData):
+        """Handle successful file load completion."""
+        try:
             # Add to log manager
-            progress.setLabelText("Adding to log manager...")
-            QCoreApplication.processEvents()
             log_file = self.log_manager.add_log_file(
-                file_path=Path(file_path),
+                file_path=self._loading_file_path,
                 telemetry=telemetry,
                 is_active=True
             )
 
             # Update UI
-            progress.setLabelText("Updating UI...")
-            QCoreApplication.processEvents()
             self.log_list_widget.add_log_file(log_file)
             self._populate_channel_tree()
             self._update_window_title()
 
-            # Refresh all existing plots
-            progress.setLabelText("Refreshing plots...")
-            QCoreApplication.processEvents()
-            self._refresh_all_plots()
+            # Check if we have pending tabs to restore (from session restore)
+            if hasattr(self, '_pending_tabs_data') and self._pending_tabs_data:
+                self._restore_tabs_from_data(self._pending_tabs_data)
+                self._pending_tabs_data = None
+            else:
+                # Refresh all existing plots
+                self._refresh_all_plots()
 
-            # Update status bar
+            # Update status bar with backend info
             time_range = telemetry.get_time_range()
             duration = time_range[1] - time_range[0]
             self.statusbar.showMessage(
                 f"Loaded: {log_file.display_name} - {len(telemetry.channels)} channels, "
                 f"{len(telemetry.data)} samples, "
-                f"{duration:.1f}s duration"
+                f"{duration:.1f}s duration ({get_parser_backend()})"
             )
 
         except Exception as e:
             QMessageBox.critical(
                 self,
-                "Error Loading File",
-                f"Failed to load file:\n{str(e)}"
+                "Error Processing File",
+                f"Failed to process loaded data:\n{str(e)}"
             )
-            self.statusbar.showMessage("Failed to load file")
+            self.statusbar.showMessage("Failed to process file")
         finally:
-            progress.close()
+            self._cleanup_loader()
+
+    def _on_load_error(self, error_message: str):
+        """Handle file load error."""
+        QMessageBox.critical(
+            self,
+            "Error Loading File",
+            f"Failed to load file:\n{error_message}"
+        )
+        self.statusbar.showMessage("Failed to load file")
+        self._cleanup_loader()
+
+    def _cleanup_loader(self):
+        """Clean up loader thread and progress dialog."""
+        if hasattr(self, '_progress_dialog') and self._progress_dialog:
+            self._progress_dialog.close()
+            self._progress_dialog = None
+
+        if hasattr(self, '_loader_thread') and self._loader_thread:
+            self._loader_thread.deleteLater()
+            self._loader_thread = None
 
     def _populate_channel_tree(self):
         """Populate the channel tree with MAIN log's channels."""
@@ -990,8 +1068,12 @@ class MainWindow(QMainWindow):
 
         menu.exec(position)
 
-    def _create_new_plot_tab(self):
-        """Create a new plot tab."""
+    def _create_new_plot_tab(self, auto_rename: bool = True):
+        """Create a new plot tab.
+
+        Args:
+            auto_rename: If True, automatically open rename dialog for the new tab
+        """
         # Create new plot container with sync callback, units manager, and log manager
         plot_container = PlotContainer(
             sync_callback=self._synchronize_all_x_axes,
@@ -1011,13 +1093,14 @@ class MainWindow(QMainWindow):
         # Set as current tab
         self.tab_widget.setCurrentIndex(tab_index)
 
-        # Enable renaming on double-click
-        self.tab_widget.tabBarDoubleClicked.connect(self._rename_tab)
-
         self.tab_counter += 1
 
         # Synchronize X-axes across all plots
         self._synchronize_all_x_axes()
+
+        # Automatically open rename dialog for new tab
+        if auto_rename:
+            self._rename_tab(tab_index)
 
     def _close_tab(self, index: int):
         """Close a tab."""
@@ -1340,13 +1423,13 @@ class MainWindow(QMainWindow):
         last_log_file = session_data.get('last_log_file')
         if last_log_file and Path(last_log_file).exists():
             try:
-                self.open_file(last_log_file)
-
-                # Restore tabs after file is loaded
+                # Store pending tabs data to be restored after file loads
+                # (open_file now uses background thread, so we can't restore tabs immediately)
                 tabs_data = session_data.get('tabs', [])
-                main_log = self.log_manager.get_main_log()
-                if tabs_data and main_log:
-                    self._restore_tabs_from_data(tabs_data)
+                if tabs_data:
+                    self._pending_tabs_data = tabs_data
+
+                self.open_file(last_log_file)
 
             except Exception as e:
                 print(f"Failed to restore session: {e}")

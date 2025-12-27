@@ -4,6 +4,14 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 
 ## Features
 
+### Performance Optimizations (v0.5.0)
+- **Polars Backend**: Uses Polars for 10-100x faster CSV loading compared to pandas
+- **Parquet Caching**: Automatically caches parsed files as Parquet for instant repeat loads
+- **Background Loading**: File loading runs in a background thread with progress feedback - UI stays responsive
+- **Float32 Storage**: Uses 32-bit floats for 50% memory reduction on large files
+- **GPU Acceleration** (optional): CuPy support for faster array operations on NVIDIA GPUs
+- **Graceful Fallbacks**: Automatically uses best available backend (cuDF → Polars → pandas)
+
 ### Multi-Log Comparison
 - **Load Multiple Logs**: Compare data from multiple runs simultaneously
 - **Automatic Time Alignment**: All logs automatically align to start at time 0 for easy comparison
@@ -71,7 +79,7 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 
 ### For End Users (Windows)
 
-1. Download the latest installer: `MFViewer-Setup-0.4.1.exe`
+1. Download the latest installer: `MFViewer-Setup-0.5.0.exe`
 2. Run the installer and follow the prompts
 3. Launch MFViewer from the Start Menu or Desktop shortcut
 
@@ -207,13 +215,21 @@ MFViewer/
 
 ## Dependencies
 
+### Core
 - **PyQt6**: GUI framework
-- **pandas**: Data processing and manipulation
+- **pandas**: Data processing fallback
 - **numpy**: Numerical computations
 - **pyqtgraph**: Fast, interactive plotting
 - **openpyxl**: Excel export support
 - **PyYAML**: Configuration management
 - **platformdirs**: Cross-platform config directories
+
+### Performance (automatically used when available)
+- **polars**: High-performance DataFrame library (10-100x faster CSV loading)
+- **pyarrow**: Parquet file support for caching
+
+### GPU Acceleration (optional)
+- **cupy-cuda12x**: GPU-accelerated array operations (requires NVIDIA GPU with CUDA 12.x)
 
 ## Development Roadmap
 
@@ -222,21 +238,28 @@ MFViewer/
 - [x] Basic GUI shell
 - [x] Time-series plotting
 
-### Phase 2: Enhanced Visualization
+### Phase 2: Enhanced Visualization ✓
+- [x] Multiple plot layouts (horizontal/vertical tiling)
+- [x] Plot synchronization and linking
 - [ ] Custom dashboard with gauges
-- [ ] Multiple plot layouts
-- [ ] Plot synchronization and linking
 
 ### Phase 3: Data Analysis
 - [ ] Export functionality (CSV, Excel, JSON)
 - [ ] Advanced statistics
 - [ ] Data filtering and resampling
 
-### Phase 4: Polish
-- [ ] Performance optimizations
-- [ ] Keyboard shortcuts
-- [ ] Dark/light themes
-- [ ] User preferences
+### Phase 4: Performance ✓
+- [x] Polars/cuDF high-performance data loading
+- [x] Parquet caching for instant repeat loads
+- [x] Background threading for responsive UI
+- [x] GPU acceleration support (CuPy)
+- [x] Float32 memory optimization
+
+### Phase 5: Polish ✓
+- [x] Keyboard shortcuts
+- [x] Dark theme
+- [x] User preferences
+- [x] Multi-log comparison
 
 ## Contributing
 

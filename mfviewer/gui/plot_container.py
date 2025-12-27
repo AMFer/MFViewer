@@ -150,10 +150,10 @@ class PlotContainer(QWidget):
             plot_config = {
                 'channels': plot.get_channel_names()
             }
-            # Include Y-axis range if available
+            # Include Y-axis range if available (convert to native float for JSON)
             y_range = plot.get_y_range()
             if y_range:
-                plot_config['y_range'] = list(y_range)
+                plot_config['y_range'] = [float(y_range[0]), float(y_range[1])]
             plots_config.append(plot_config)
 
         return {

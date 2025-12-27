@@ -1,9 +1,13 @@
 # GUI Framework
 PyQt6>=6.6.0
 
-# Data Processing
+# Data Processing - Core
 pandas>=2.0.0
 numpy>=1.24.0
+
+# Data Processing - Performance (optional but recommended)
+polars>=0.20.0  # 10-100x faster CSV loading than pandas
+pyarrow>=14.0.0  # Parquet caching for instant repeat loads
 
 # Plotting
 pyqtgraph>=0.13.0
@@ -14,3 +18,7 @@ openpyxl>=3.1.0
 # Configuration
 PyYAML>=6.0
 platformdirs>=4.0.0
+
+# GPU Acceleration (optional - requires NVIDIA GPU with CUDA 12.x)
+# Requires Python 3.11 (not available for Python 3.14 yet)
+cupy-cuda12x>=13.0.0; python_version < "3.13"

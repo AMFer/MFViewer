@@ -1,5 +1,10 @@
 """
 Time-series plotting widget using PyQtGraph.
+
+Performance features:
+- GPU-accelerated array operations via CuPy (when available)
+- OpenGL rendering for smooth plotting
+- Level of Detail (LOD) support for large datasets
 """
 
 from typing import Dict, Optional, List, Tuple
@@ -23,6 +28,83 @@ try:
     OPENGL_AVAILABLE = True
 except ImportError:
     OPENGL_AVAILABLE = False
+
+# Try to import CuPy for GPU-accelerated array operations
+CUPY_AVAILABLE = False
+try:
+    import cupy as cp
+    # Verify CUDA is actually available
+    cp.cuda.runtime.getDeviceCount()
+    CUPY_AVAILABLE = True
+except (ImportError, Exception):
+    pass
+
+
+def filter_nan_values(time_data: np.ndarray, values: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Filter out NaN values from time and value arrays.
+
+    Uses CuPy (GPU) if available for faster processing on large arrays.
+    Falls back to NumPy for CPU processing.
+
+    Args:
+        time_data: Array of time values
+        values: Array of data values
+
+    Returns:
+        Tuple of (filtered_time, filtered_values)
+    """
+    # Only use GPU for larger arrays where transfer overhead is worth it
+    if CUPY_AVAILABLE and len(values) > 10000:
+        try:
+            # Transfer to GPU
+            values_gpu = cp.asarray(values)
+
+            # Compute mask on GPU
+            mask = ~cp.isnan(values_gpu)
+
+            # Apply mask and transfer back to CPU
+            time_data_gpu = cp.asarray(time_data)
+            filtered_time = time_data_gpu[mask].get()
+            filtered_values = values_gpu[mask].get()
+
+            return filtered_time, filtered_values
+        except Exception:
+            # Fall back to CPU if GPU operation fails
+            pass
+
+    # CPU fallback (NumPy)
+    mask = ~np.isnan(values)
+    return time_data[mask], values[mask]
+
+
+def compute_statistics_gpu(values: np.ndarray) -> dict:
+    """
+    Compute statistics using GPU if available.
+
+    Args:
+        values: Array of values
+
+    Returns:
+        Dict with min, max, mean statistics
+    """
+    if CUPY_AVAILABLE and len(values) > 50000:
+        try:
+            values_gpu = cp.asarray(values)
+            return {
+                'min': float(cp.nanmin(values_gpu).get()),
+                'max': float(cp.nanmax(values_gpu).get()),
+                'mean': float(cp.nanmean(values_gpu).get()),
+            }
+        except Exception:
+            pass
+
+    # CPU fallback
+    return {
+        'min': float(np.nanmin(values)),
+        'max': float(np.nanmax(values)),
+        'mean': float(np.nanmean(values)),
+    }
 
 
 # Line styles for multi-log comparison (up to 5 logs)
@@ -68,6 +150,10 @@ class PlotWidget(QWidget):
         self.telemetry: Optional[TelemetryData] = None
         self.plot_items: Dict[Tuple[str, int], dict] = {}  # (channel_name, log_index) -> plot_info
         self.units_manager = units_manager  # For unit conversions and display
+
+        # Pending channels to plot when data becomes available
+        # This preserves channel configuration when no logs are loaded
+        self.pending_channels: set = set()
 
         # Exclude outliers setting (default: True)
         self.exclude_outliers = True
@@ -230,26 +316,28 @@ class PlotWidget(QWidget):
 
     def get_channel_names(self) -> List[str]:
         """
-        Get list of channel names currently plotted.
+        Get list of channel names currently plotted or pending.
 
         Returns:
-            List of channel names
+            List of channel names (includes both plotted and pending channels)
         """
-        # Extract unique channel names from tuple keys
-        return list(set(key[0] for key in self.plot_items.keys()))
+        # Extract unique channel names from tuple keys, plus any pending channels
+        plotted = set(key[0] for key in self.plot_items.keys())
+        return list(plotted | self.pending_channels)
 
     def get_y_range(self) -> Optional[Tuple[float, float]]:
         """
         Get the current Y-axis range.
 
         Returns:
-            Tuple of (min, max) or None if no range set
+            Tuple of (min, max) as native Python floats, or None if no range set
         """
         view_range = self.plot_widget.viewRange()
         if view_range and len(view_range) >= 2:
             y_range = view_range[1]  # [0] is X, [1] is Y
             if y_range and len(y_range) >= 2:
-                return (y_range[0], y_range[1])
+                # Convert to native Python float for JSON serialization
+                return (float(y_range[0]), float(y_range[1]))
         return None
 
     def set_y_range(self, y_min: float, y_max: float):
@@ -295,10 +383,8 @@ class PlotWidget(QWidget):
             # Use the channel's data_type from the log file header
             values = self.units_manager.apply_channel_conversion(channel.name, values, channel.data_type)
 
-        # Remove NaN values for cleaner plotting
-        mask = ~np.isnan(values)
-        time_data = time_data[mask]
-        values = values[mask]
+        # Remove NaN values for cleaner plotting (uses GPU if available)
+        time_data, values = filter_nan_values(time_data, values)
 
         if len(time_data) == 0:
             return
@@ -338,9 +424,10 @@ class PlotWidget(QWidget):
         is_first_for_channel = not any(key[0] == channel.name for key in self.plot_items.keys())
         legend_name = channel.name if is_first_for_channel else None
 
+        # Convert to float64 for pyqtgraph to avoid overflow in ViewBox calculations
         plot_item = self.plot_widget.plot(
-            time_data,
-            values,
+            time_data.astype(np.float64),
+            values.astype(np.float64),
             pen=pen,
             name=legend_name  # None means no legend entry
         )
@@ -366,7 +453,15 @@ class PlotWidget(QWidget):
             channel_name: Channel to plot
             log_manager: LogFileManager instance
         """
-        active_logs = log_manager.get_active_logs()
+        active_logs = log_manager.get_active_logs() if log_manager else []
+
+        if not active_logs:
+            # No logs available - store as pending channel
+            self.pending_channels.add(channel_name)
+            return
+
+        # Remove from pending since we're plotting it now
+        self.pending_channels.discard(channel_name)
 
         for active_index, log_file in enumerate(active_logs):
             channel = log_file.telemetry.get_channel(channel_name)
@@ -487,16 +582,19 @@ class PlotWidget(QWidget):
             for key in keys_to_remove:
                 self.plot_widget.removeItem(self.plot_items[key]['plot_item'])
                 del self.plot_items[key]
+            # Also remove from pending channels
+            self.pending_channels.discard(channel_name)
 
     def clear_all_plots(self):
-        """Clear all plots."""
-        # Remove all plot items
-        for channel_name in list(self.plot_items.keys()):
-            self.remove_channel(channel_name)
+        """Clear all visual plots but preserve pending channel configuration."""
+        # Clear visual plot items directly (don't use remove_channel to preserve pending)
+        for plot_key, plot_info in list(self.plot_items.items()):
+            self.plot_widget.removeItem(plot_info['plot_item'])
 
         # Clear the plot widget
         self.plot_widget.clear()
         self.plot_items.clear()
+        # Note: pending_channels is intentionally NOT cleared here
 
         # Re-add grid and legend with dark theme
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
@@ -595,9 +693,10 @@ class PlotWidget(QWidget):
                 legend_name = channel.name
                 channels_with_legend.add(channel.name)
 
+            # Convert to float64 for pyqtgraph to avoid overflow in ViewBox calculations
             plot_item = self.plot_widget.plot(
-                time_data,
-                values,
+                time_data.astype(np.float64),
+                values.astype(np.float64),
                 pen=pen,
                 name=legend_name  # None means no legend entry
             )
@@ -702,9 +801,10 @@ class PlotWidget(QWidget):
                 legend_name = channel.name
                 channels_with_legend.add(channel.name)
 
+            # Convert to float64 for pyqtgraph to avoid overflow in ViewBox calculations
             plot_item = self.plot_widget.plot(
-                time_data,
-                values,
+                time_data.astype(np.float64),
+                values.astype(np.float64),
                 pen=pen,
                 name=legend_name  # None means no legend entry
             )
@@ -733,18 +833,40 @@ class PlotWidget(QWidget):
         Args:
             log_manager: LogFileManager instance
         """
-        if not self.plot_items:
+        # Collect unique channel names from both plotted items and pending channels
+        channel_names = set(key[0] for key in self.plot_items.keys()) | self.pending_channels
+
+        if not channel_names:
             return
 
-        # Collect unique channel names
-        channel_names = set(key[0] for key in self.plot_items.keys())
+        # Save cursor state before clearing
+        cursor_pos = self.cursor_x_position
+        was_cursor_active = self.cursor_active
 
-        # Clear all
+        # Clear all visual plots
         self.clear_all_plots()
 
-        # Re-plot from active logs
-        for channel_name in channel_names:
-            self.add_channel_from_all_logs(channel_name, log_manager)
+        # Store log manager reference
+        self.log_manager = log_manager
+
+        # Check if there are any active logs
+        active_logs = log_manager.get_active_logs() if log_manager else []
+
+        if not active_logs:
+            # No logs available - store channels as pending for later
+            self.pending_channels = channel_names
+        else:
+            # Clear pending channels since we're about to plot them
+            self.pending_channels.clear()
+
+            # Re-plot from active logs
+            for channel_name in channel_names:
+                self.add_channel_from_all_logs(channel_name, log_manager)
+
+            # Restore cursor state if it was active
+            if was_cursor_active and cursor_pos is not None and self.plot_items:
+                self.cursor_active = True
+                self.set_cursor_position(cursor_pos)
 
     def dragEnterEvent(self, event):
         """Handle drag enter event."""
@@ -855,20 +977,63 @@ class PlotWidget(QWidget):
     def set_cursor_position(self, x_pos: float):
         """
         Set cursor position and update legend with values.
+        Snaps cursor to data boundaries if clicked outside the data range.
 
         Args:
             x_pos: X position for the cursor
         """
-        self.cursor_x_position = x_pos
+        # Snap cursor to data range if we have plot items
+        snapped_x_pos = x_pos
+        if self.plot_items:
+            snapped_x_pos = self._snap_to_data_range(x_pos)
+
+        self.cursor_x_position = snapped_x_pos
 
         # Always show and position cursor line (even if no data)
         if self.cursor_line:
-            self.cursor_line.setPos(x_pos)
+            self.cursor_line.setPos(snapped_x_pos)
             self.cursor_line.setVisible(True)
 
         # Update legend with values at cursor position (only if we have data)
         if self.plot_items:
-            self._update_legend_with_cursor_values(x_pos)
+            self._update_legend_with_cursor_values(snapped_x_pos)
+
+    def _snap_to_data_range(self, x_pos: float) -> float:
+        """
+        Snap x position to the data range boundaries if outside.
+
+        Args:
+            x_pos: Requested x position
+
+        Returns:
+            x position clamped to data range
+        """
+        if not self.plot_items:
+            return x_pos
+
+        # Find the global data range across all plot items
+        x_min = None
+        x_max = None
+
+        for plot_info in self.plot_items.values():
+            plot_item = plot_info['plot_item']
+            if plot_item.xData is not None and len(plot_item.xData) > 0:
+                item_min = plot_item.xData[0]
+                item_max = plot_item.xData[-1]
+
+                if x_min is None or item_min < x_min:
+                    x_min = item_min
+                if x_max is None or item_max > x_max:
+                    x_max = item_max
+
+        # Clamp to range if we have data
+        if x_min is not None and x_max is not None:
+            if x_pos < x_min:
+                return x_min
+            elif x_pos > x_max:
+                return x_max
+
+        return x_pos
 
     def _update_legend_with_cursor_values(self, x_pos: float):
         """
@@ -946,28 +1111,30 @@ class PlotWidget(QWidget):
             return None
 
         # Find closest point or interpolate
-        # Check if x_pos is within data range
-        if x_pos < x_data[0] or x_pos > x_data[-1]:
-            return None
-
-        # Find the two nearest points for interpolation
-        idx = np.searchsorted(x_data, x_pos)
-
-        if idx == 0:
+        # If x_pos is outside data range, clamp to nearest boundary
+        if x_pos < x_data[0]:
             value = y_data[0]
-        elif idx >= len(x_data):
+        elif x_pos > x_data[-1]:
             value = y_data[-1]
         else:
-            # Linear interpolation
-            x0, x1 = x_data[idx - 1], x_data[idx]
-            y0, y1 = y_data[idx - 1], y_data[idx]
+            # Find the two nearest points for interpolation
+            idx = np.searchsorted(x_data, x_pos)
 
-            if x1 == x0:
-                value = y0
+            if idx == 0:
+                value = y_data[0]
+            elif idx >= len(x_data):
+                value = y_data[-1]
             else:
-                # Interpolate
-                t = (x_pos - x0) / (x1 - x0)
-                value = y0 + t * (y1 - y0)
+                # Linear interpolation
+                x0, x1 = x_data[idx - 1], x_data[idx]
+                y0, y1 = y_data[idx - 1], y_data[idx]
+
+                if x1 == x0:
+                    value = y0
+                else:
+                    # Interpolate
+                    t = (x_pos - x0) / (x1 - x0)
+                    value = y0 + t * (y1 - y0)
 
         # Format value
         if np.isnan(value):
