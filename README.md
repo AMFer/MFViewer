@@ -4,7 +4,7 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 
 ## Features
 
-### Performance Optimizations (v0.5.1)
+### Performance Optimizations (v0.5.2)
 - **Polars Backend**: Uses Polars for 10-100x faster CSV loading compared to pandas
 - **Parquet Caching**: Automatically caches parsed files as Parquet for instant repeat loads
 - **Background Loading**: File loading runs in a background thread with progress feedback - UI stays responsive
@@ -17,8 +17,13 @@ A Python-based desktop application for viewing and analyzing telemetry log files
   - Deferred auto-scale batches multiple channel additions
   - O(1) legend and color caching for instant lookups
   - Pre-computed channel statistics at parse time
-  - Level of Detail (LOD) for faster initial plotting of large datasets
+  - Adaptive Level of Detail (LOD) - limits points to ~2x pixels, adjusts on zoom
   - GPU-accelerated batch interpolation for legend values (5+ channels)
+- **Fast Cursor Movement** (v0.5.2):
+  - Container-level cursor overlay draws all cursor lines in a single paint operation
+  - Bypasses PyQtGraph's scene rendering for cursor updates
+  - 1-pixel cursor movement with arrow keys for precise navigation
+  - Ctrl+Arrow for 2.5% jumps, Shift+Arrow for 10% jumps
 
 ### Multi-Log Comparison
 - **Load Multiple Logs**: Compare data from multiple runs simultaneously
@@ -87,7 +92,7 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 
 ### For End Users (Windows)
 
-1. Download the latest installer: `MFViewer-Setup-0.5.1.exe`
+1. Download the latest installer: `MFViewer-Setup-0.5.2.exe`
 2. Run the installer and follow the prompts
 3. Launch MFViewer from the Start Menu or Desktop shortcut
 
@@ -201,6 +206,12 @@ python -m mfviewer.main
 - **Ctrl+Shift+T**: Time synchronization dialog
 - **F2**: Rename current tab
 - **Ctrl+Q**: Quit application
+
+#### Cursor Navigation
+- **Left/Right Arrow**: Move cursor by 1 pixel (precise navigation)
+- **Ctrl+Left/Right Arrow**: Move cursor by 2.5% of visible range
+- **Shift+Left/Right Arrow**: Move cursor by 10% of visible range
+- **Click on plot**: Place cursor at mouse position
 
 ## Project Structure
 

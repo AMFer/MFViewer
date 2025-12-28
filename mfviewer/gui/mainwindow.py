@@ -21,8 +21,10 @@ from mfviewer.gui.plot_widget import PlotWidget
 from mfviewer.gui.plot_container import PlotContainer
 from mfviewer.gui.preferences_dialog import PreferencesDialog
 from mfviewer.gui.channel_text_mapping_dialog import ChannelTextMappingDialog
+from mfviewer.gui.debug_settings_dialog import DebugSettingsDialog
 from mfviewer.utils.config import TabConfiguration
 from mfviewer.utils.units import UnitsManager
+from mfviewer.utils import debug_log
 from mfviewer.widgets.log_list_widget import LogListWidget
 
 
@@ -118,6 +120,7 @@ class MainWindow(QMainWindow):
         self.plot_tabs: list = []  # Track all plot tab widgets
         self.tab_counter: int = 1  # Counter for naming new tabs
         self.master_viewbox = None  # Master viewbox for X-axis synchronization
+        self._global_cursor_x: Optional[float] = None  # Global cursor position for lazy tab sync
 
         # Initialize units manager
         self.units_manager = UnitsManager()
@@ -607,6 +610,12 @@ class MainWindow(QMainWindow):
         preferences_action.setShortcut(QKeySequence("Ctrl+,"))
         preferences_action.triggered.connect(self._show_preferences)
         tools_menu.addAction(preferences_action)
+
+        tools_menu.addSeparator()
+
+        debug_settings_action = QAction("&Debug Settings...", self)
+        debug_settings_action.triggered.connect(self._show_debug_settings)
+        tools_menu.addAction(debug_settings_action)
 
         # Help menu
         help_menu = menubar.addMenu("&Help")
@@ -1639,18 +1648,39 @@ class MainWindow(QMainWindow):
         # Store reference to MainWindow for global sync
         def create_global_sync_callback():
             def global_cursor_sync(x_pos: float):
-                # Update ALL plots in ALL tabs
-                for i in range(self.tab_widget.count()):
-                    widget = self.tab_widget.widget(i)
-                    if isinstance(widget, PlotContainer):
-                        for plot in widget.plot_widgets:
-                            # Temporarily disable cursor callback to avoid recursion
-                            original_callback = plot.cursor_callback
-                            plot.cursor_callback = None
-                            # Ensure cursor is active on all plots
-                            plot.cursor_active = True
-                            plot.set_cursor_position(x_pos)
-                            plot.cursor_callback = original_callback
+                # Store cursor position globally for lazy sync when switching tabs
+                self._global_cursor_x = x_pos
+
+                # Only update plots in the CURRENT visible tab for performance
+                current_widget = self.tab_widget.currentWidget()
+                if not isinstance(current_widget, PlotContainer):
+                    return
+
+                import time
+                with debug_log.benchmark("Cursor sync (active tab only)") as m:
+                    total_plots = len(current_widget.plot_widgets)
+                    sync_start = time.perf_counter()
+
+                    # Update internal cursor state on each plot (for legend updates)
+                    # But DON'T repaint individual plot overlays
+                    for plot in current_widget.plot_widgets:
+                        # Temporarily disable cursor callback to avoid recursion
+                        original_callback = plot.cursor_callback
+                        plot.cursor_callback = None
+                        plot.cursor_active = True
+                        # Update cursor position but defer ALL repaints
+                        plot.set_cursor_position(x_pos, defer_repaint=True)
+                        plot.cursor_callback = original_callback
+                        # Hide per-plot cursor overlay (container handles drawing)
+                        if plot.cursor_line:
+                            plot.cursor_line.setVisible(False)
+
+                    # Use container's single cursor overlay for ONE repaint
+                    # instead of N repaints (one per plot)
+                    current_widget.set_cursor_position(x_pos)
+
+                    m['extra']['plots'] = total_plots
+                    m['extra']['total_sync_ms'] = f"{(time.perf_counter() - sync_start) * 1000:.3f}"
             return global_cursor_sync
 
         # Replace the container's cursor moved handler
@@ -1711,6 +1741,11 @@ class MainWindow(QMainWindow):
 
             self.statusbar.showMessage("Preferences updated", 3000)
 
+    def _show_debug_settings(self):
+        """Show debug settings dialog."""
+        dialog = DebugSettingsDialog(self)
+        dialog.exec()
+
     def _show_channel_text_mapping(self):
         """Show channel text mapping dialog."""
         # Get channel names from loaded logs
@@ -1746,6 +1781,8 @@ class MainWindow(QMainWindow):
                 if isinstance(widget, PlotContainer):
                     for plot_widget in widget.plot_widgets:
                         plot_widget.refresh_with_multi_log(self.log_manager)
+                    # Synchronize Y-axis widths after refresh
+                    widget.synchronize_y_axis_widths()
                 elif isinstance(widget, PlotWidget):
                     widget.refresh_with_multi_log(self.log_manager)
             else:
@@ -1757,7 +1794,7 @@ class MainWindow(QMainWindow):
 
     def _on_tab_changed(self, index: int):
         """
-        Handle tab change - refresh stale tabs if needed.
+        Handle tab change - refresh stale tabs and sync cursor position.
 
         Args:
             index: Index of the newly selected tab
@@ -1772,8 +1809,21 @@ class MainWindow(QMainWindow):
             if isinstance(widget, PlotContainer):
                 for plot_widget in widget.plot_widgets:
                     plot_widget.refresh_with_multi_log(self.log_manager)
+                # Synchronize Y-axis widths after refresh
+                widget.synchronize_y_axis_widths()
             elif isinstance(widget, PlotWidget):
                 widget.refresh_with_multi_log(self.log_manager)
+
+        # Sync cursor position to the newly visible tab (lazy sync)
+        if hasattr(self, '_global_cursor_x') and self._global_cursor_x is not None:
+            if isinstance(widget, PlotContainer):
+                for plot in widget.plot_widgets:
+                    # Only update if cursor was active somewhere
+                    original_callback = plot.cursor_callback
+                    plot.cursor_callback = None
+                    plot.cursor_active = True
+                    plot.set_cursor_position(self._global_cursor_x)
+                    plot.cursor_callback = original_callback
 
     def _refresh_all_plots_with_new_units(self):
         """

@@ -12,13 +12,14 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QListWidget, QListWidgetItem, QSplitter, QCheckBox, QMenu
 )
-from PyQt6.QtCore import Qt, QEvent, QTimer
-from PyQt6.QtGui import QMouseEvent, QAction, QPen
+from PyQt6.QtCore import Qt, QEvent, QTimer, QLineF
+from PyQt6.QtGui import QMouseEvent, QAction, QPen, QKeyEvent, QPainter, QColor
 import pyqtgraph as pg
 import numpy as np
 from pathlib import Path
 
 from mfviewer.data.parser import ChannelInfo, TelemetryData
+from mfviewer.utils import debug_log
 
 # Try to enable OpenGL for better performance
 try:
@@ -38,6 +39,78 @@ try:
     CUPY_AVAILABLE = True
 except (ImportError, Exception):
     pass
+
+
+class CursorOverlay(QWidget):
+    """
+    Transparent overlay widget that draws cursor line directly on viewport.
+
+    This completely bypasses PyQtGraph's scene/view architecture to avoid
+    triggering repaints of plot items when the cursor moves.
+    """
+
+    def __init__(self, plot_widget: pg.PlotWidget, parent=None):
+        super().__init__(parent)
+        self._plot_widget = plot_widget
+        self._x_data_pos = None  # Cursor position in data coordinates
+        self._pen = QPen(QColor(255, 255, 0), 1)
+
+        # Make overlay transparent to mouse events
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet("background: transparent;")
+
+    def set_x(self, x_pos: float, defer_repaint: bool = False):
+        """Set cursor X position in data coordinates."""
+        self._x_data_pos = x_pos
+        if not defer_repaint:
+            self.update()
+
+    def trigger_repaint(self):
+        """Trigger repaint (for batched updates)."""
+        self.update()
+
+    def setVisible(self, visible: bool):
+        """Override to handle visibility."""
+        super().setVisible(visible)
+        if visible:
+            # Ensure we're on top and sized correctly
+            self.raise_()
+            self.setGeometry(self._plot_widget.viewport().geometry())
+
+    def paintEvent(self, event):
+        """Draw cursor line directly - no scene involvement."""
+        if self._x_data_pos is None:
+            return
+
+        # Get view box for coordinate mapping
+        view_box = self._plot_widget.getViewBox()
+        if view_box is None:
+            return
+
+        # Get view range and plot area
+        view_range = view_box.viewRange()
+        x_range = view_range[0]
+
+        if x_range[1] == x_range[0]:
+            return
+
+        # Get the plot area bounds in widget coordinates
+        view_rect = view_box.sceneBoundingRect()
+        top_left = self._plot_widget.mapFromScene(view_rect.topLeft())
+        bottom_right = self._plot_widget.mapFromScene(view_rect.bottomRight())
+
+        # Calculate X pixel position
+        x_frac = (self._x_data_pos - x_range[0]) / (x_range[1] - x_range[0])
+        x_pixel = top_left.x() + x_frac * (bottom_right.x() - top_left.x())
+
+        # Only draw if within bounds
+        if top_left.x() <= x_pixel <= bottom_right.x():
+            painter = QPainter(self)
+            painter.setPen(self._pen)
+            painter.drawLine(int(x_pixel), int(top_left.y()),
+                           int(x_pixel), int(bottom_right.y()))
+            painter.end()
 
 
 def filter_nan_values(time_data: np.ndarray, values: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -322,6 +395,9 @@ class PlotWidget(QWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
+        # Enable keyboard focus for arrow key navigation
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
         self._setup_ui()
 
     def _setup_ui(self):
@@ -329,7 +405,7 @@ class PlotWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Plot area
+        # Plot area - standard PlotWidget
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setBackground('#1e1e1e')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
@@ -361,24 +437,22 @@ class PlotWidget(QWidget):
         self.legend.setBrush('#2d2d30')
 
         # Install event filter on legend to handle clicks
-        self.legend.scene().installEventFilter(self)
+        self.plot_widget.scene().installEventFilter(self)
         self._last_click_pos = None
 
-        # Create cursor line (initially hidden)
-        self.cursor_line = pg.InfiniteLine(
-            pos=0,
-            angle=90,
-            pen=pg.mkPen(color='#ffff00', width=1, style=Qt.PenStyle.DashLine),
-            movable=False
-        )
-        self.cursor_line.setVisible(False)
-        self.plot_widget.addItem(self.cursor_line)
+        # Create cursor overlay - a transparent widget on top of the viewport
+        # This bypasses PyQtGraph's scene entirely for cursor drawing
+        self.cursor_line = CursorOverlay(self.plot_widget, self.plot_widget)
+        self.cursor_line.setVisible(False)  # Hidden until cursor is activated
 
         # Track if cursor is active and being dragged
         self.cursor_active = False
         self.cursor_dragging = False
 
         # Install event filter on the plot widget to capture mouse events
+        self.plot_widget.viewport().installEventFilter(self)
+
+        # Connect viewport resize to overlay resize
         self.plot_widget.viewport().installEventFilter(self)
 
         layout.addWidget(self.plot_widget)
@@ -414,8 +488,13 @@ class PlotWidget(QWidget):
                         self.remove_channel(channel_name)
                         return True
 
-        # Handle mouse events on the plot viewport for cursor dragging
+        # Handle viewport resize to update cursor overlay geometry
         if obj == self.plot_widget.viewport():
+            if event.type() == QEvent.Type.Resize:
+                # Update cursor overlay size to match viewport
+                if self.cursor_line and self.cursor_line.isVisible():
+                    self.cursor_line.setGeometry(self.plot_widget.viewport().geometry())
+
             if event.type() == QEvent.Type.MouseButtonPress:
                 if event.button() == Qt.MouseButton.LeftButton and self.plot_items:
                     # Check if mouse is not over legend before starting cursor drag
@@ -493,6 +572,27 @@ class PlotWidget(QWidget):
         """
         self.plot_widget.setYRange(y_min, y_max, padding=0)
 
+    def get_y_axis_width(self) -> int:
+        """
+        Get the current width of the Y-axis in pixels.
+
+        Returns:
+            Width of the Y-axis area in pixels
+        """
+        y_axis = self.plot_widget.getAxis('left')
+        return y_axis.width() if y_axis else 0
+
+    def set_y_axis_width(self, width: int):
+        """
+        Set a fixed width for the Y-axis.
+
+        Args:
+            width: Width in pixels to set for the Y-axis
+        """
+        y_axis = self.plot_widget.getAxis('left')
+        if y_axis:
+            y_axis.setWidth(width)
+
     def add_channel(self, channel: ChannelInfo, telemetry: TelemetryData,
                     active_index: int = 0, log_file_path: Optional[Path] = None,
                     defer_auto_scale: bool = False):
@@ -506,6 +606,8 @@ class PlotWidget(QWidget):
             log_file_path: Path to the log file (optional)
             defer_auto_scale: If True, skip auto-scale (caller will handle it)
         """
+        debug_log.debug(f"Adding channel: {channel.name} (log {active_index})")
+
         # Check if already plotted with tuple key
         plot_key = (channel.name, active_index)
         if plot_key in self.plot_items:
@@ -686,6 +788,7 @@ class PlotWidget(QWidget):
         )
         if all_percentage:
             self.plot_widget.setYRange(0, 100, padding=0)
+            self._ensure_cursor_visible()
             return
 
         if self.exclude_outliers:
@@ -733,10 +836,18 @@ class PlotWidget(QWidget):
                 # Add 5% padding
                 padding = (overall_max - overall_min) * 0.05
                 self.plot_widget.setYRange(overall_min - padding, overall_max + padding, padding=0)
+                self._ensure_cursor_visible()
                 return
 
         # If not excluding outliers or no data, auto-range Y only
         self.plot_widget.enableAutoRange(axis='y')
+        self._ensure_cursor_visible()
+
+    def _ensure_cursor_visible(self):
+        """Ensure cursor is visible, initializing at time 0 if not yet active."""
+        if not self.cursor_active and self.plot_items:
+            self.cursor_active = True
+            self.set_cursor_position(0.0)
 
     def remove_channel(self, channel_name: str, log_index: Optional[int] = None):
         """
@@ -780,7 +891,7 @@ class PlotWidget(QWidget):
         for plot_key, plot_info in list(self.plot_items.items()):
             self.plot_widget.removeItem(plot_info['plot_item'])
 
-        # Clear the plot widget
+        # Clear the plot widget (this removes all items including cursor)
         self.plot_widget.clear()
         self.plot_items.clear()
         # Note: pending_channels is intentionally NOT cleared here
@@ -799,17 +910,13 @@ class PlotWidget(QWidget):
         self.legend.setBrush('#2d2d30')
 
         # Reinstall event filter for legend clicks
-        self.legend.scene().installEventFilter(self)
+        self.plot_widget.scene().installEventFilter(self)
 
-        # Re-add cursor line
-        self.cursor_line = pg.InfiniteLine(
-            pos=0,
-            angle=90,
-            pen=pg.mkPen(color='#ffff00', width=1, style=Qt.PenStyle.DashLine),
-            movable=False
-        )
-        self.cursor_line.setVisible(False)
-        self.plot_widget.addItem(self.cursor_line)
+        # Re-create cursor overlay (it's a child widget, not affected by clear())
+        # Just hide it and reset position
+        if self.cursor_line:
+            self.cursor_line.setVisible(False)
+            self.cursor_line._x_data_pos = None
 
         # Reset cursor active state
         self.cursor_active = False
@@ -1182,7 +1289,7 @@ class PlotWidget(QWidget):
         else:
             self.set_cursor_position(x_pos)
 
-    def set_cursor_position(self, x_pos: float):
+    def set_cursor_position(self, x_pos: float, defer_repaint: bool = False):
         """
         Set cursor position and update legend with values.
         Snaps cursor to data boundaries if clicked outside the data range.
@@ -1190,30 +1297,117 @@ class PlotWidget(QWidget):
 
         Args:
             x_pos: X position for the cursor
+            defer_repaint: If True, don't trigger immediate repaint (for batched updates)
         """
-        # Snap cursor to data range if we have plot items
-        snapped_x_pos = x_pos
-        if self.plot_items:
-            snapped_x_pos = self._snap_to_data_range(x_pos)
+        import time
+        with debug_log.benchmark("Cursor position update") as m:
+            # Snap cursor to data range if we have plot items
+            snap_start = time.perf_counter()
+            snapped_x_pos = x_pos
+            if self.plot_items:
+                snapped_x_pos = self._snap_to_data_range(x_pos)
+            snap_time = (time.perf_counter() - snap_start) * 1000
 
-        self.cursor_x_position = snapped_x_pos
+            self.cursor_x_position = snapped_x_pos
 
-        # Always show and position cursor line immediately (even if no data)
-        if self.cursor_line:
-            self.cursor_line.setPos(snapped_x_pos)
-            self.cursor_line.setVisible(True)
+            # Update cursor line position
+            # If defer_repaint is True, the container will handle cursor drawing
+            # (container-level overlay is used instead of per-plot overlays)
+            line_start = time.perf_counter()
+            if self.cursor_line and not defer_repaint:
+                # Only show per-plot cursor if NOT using container-level cursor
+                self.cursor_line.setVisible(True)
+                self.cursor_line.set_x(snapped_x_pos, defer_repaint=False)
+            line_time = (time.perf_counter() - line_start) * 1000
 
-        # Debounce legend updates for smooth cursor dragging
-        # The cursor line moves immediately, but legend values update at ~30 FPS
-        if self.plot_items:
-            self._pending_cursor_x = snapped_x_pos
-            if not self._legend_update_timer.isActive():
-                self._legend_update_timer.start()
+            # Debounce legend updates for smooth cursor dragging
+            # The cursor line moves immediately, but legend values update at ~30 FPS
+            if self.plot_items:
+                self._pending_cursor_x = snapped_x_pos
+                if not self._legend_update_timer.isActive():
+                    self._legend_update_timer.start()
+
+            m['extra']['snap_ms'] = f"{snap_time:.3f}"
+            m['extra']['line_setPos_ms'] = f"{line_time:.3f}"
+            m['extra']['num_channels'] = len(self.plot_items)
 
     def _do_legend_update(self):
         """Perform the debounced legend update."""
         if self._pending_cursor_x is not None:
-            self._update_legend_with_cursor_values(self._pending_cursor_x)
+            with debug_log.benchmark("Legend update (debounced)"):
+                self._update_legend_with_cursor_values(self._pending_cursor_x)
+
+    def keyPressEvent(self, event: QKeyEvent):
+        """
+        Handle key press events for cursor navigation.
+
+        Left/Right arrows move cursor by a small time step.
+        Ctrl+Left/Right moves by a medium step (5x small).
+        Shift+Left/Right moves by a larger step.
+
+        Args:
+            event: The key event
+        """
+        # Check if this is an arrow key - if so, initialize cursor if needed
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            if not self.cursor_active and self.plot_items:
+                # Initialize cursor at time 0
+                self.cursor_active = True
+                self.set_cursor_position(0.0)
+
+        if not self.cursor_active or self.cursor_x_position is None:
+            super().keyPressEvent(event)
+            return
+
+        # Determine step size based on visible time range and plot width
+        view_range = self.plot_widget.viewRange()
+        if view_range and len(view_range) >= 1:
+            x_range = view_range[0]
+            visible_time = x_range[1] - x_range[0]
+
+            # Get plot width in pixels for 1-pixel step calculation
+            plot_width = self.plot_widget.width()
+            if plot_width > 0:
+                # 1 pixel step = visible_time / plot_width
+                one_pixel_step = visible_time / plot_width
+            else:
+                one_pixel_step = visible_time * 0.001
+
+            # Small step: 1 pixel, medium: 2.5% of visible range, large: 10%
+            small_step = one_pixel_step
+            medium_step = visible_time * 0.025
+            large_step = visible_time * 0.10
+        else:
+            small_step = 0.001
+            medium_step = 0.25
+            large_step = 1.0
+
+        # Check for modifiers
+        shift_held = event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+        ctrl_held = event.modifiers() & Qt.KeyboardModifier.ControlModifier
+
+        if shift_held:
+            step = large_step
+        elif ctrl_held:
+            step = medium_step
+        else:
+            step = small_step
+
+        new_pos = None
+        if event.key() == Qt.Key.Key_Left:
+            new_pos = self.cursor_x_position - step
+        elif event.key() == Qt.Key.Key_Right:
+            new_pos = self.cursor_x_position + step
+        else:
+            super().keyPressEvent(event)
+            return
+
+        # Move cursor through callback (for sync) or directly
+        if new_pos is not None:
+            if self.cursor_callback:
+                self.cursor_callback(new_pos)
+            else:
+                self.set_cursor_position(new_pos)
 
     def _snap_to_data_range(self, x_pos: float) -> float:
         """
@@ -1272,28 +1466,32 @@ class PlotWidget(QWidget):
 
         # Collect all plot items for batch interpolation
         # Structure: list of (channel_name, log_idx, plot_item, channel)
-        all_plot_data = []
-        for channel_name in unique_channels:
-            for log_idx in range(max_log_index + 1):
-                plot_key = (channel_name, log_idx)
-                if plot_key in self.plot_items:
-                    plot_info = self.plot_items[plot_key]
-                    all_plot_data.append((
-                        channel_name,
-                        log_idx,
-                        plot_info['plot_item'],
-                        plot_info['channel']
-                    ))
+        with debug_log.benchmark("Legend: collect plot data"):
+            all_plot_data = []
+            for channel_name in unique_channels:
+                for log_idx in range(max_log_index + 1):
+                    plot_key = (channel_name, log_idx)
+                    if plot_key in self.plot_items:
+                        plot_info = self.plot_items[plot_key]
+                        all_plot_data.append((
+                            channel_name,
+                            log_idx,
+                            plot_info['plot_item'],
+                            plot_info['channel']
+                        ))
 
         # Extract arrays for batch interpolation
-        x_arrays = []
-        y_arrays = []
-        for _, _, plot_item, _ in all_plot_data:
-            x_arrays.append(plot_item.xData)
-            y_arrays.append(plot_item.yData)
+        with debug_log.benchmark("Legend: extract arrays"):
+            x_arrays = []
+            y_arrays = []
+            for _, _, plot_item, _ in all_plot_data:
+                x_arrays.append(plot_item.xData)
+                y_arrays.append(plot_item.yData)
 
         # Perform batch interpolation (GPU if available and 5+ channels)
-        interpolated_values = batch_interpolate_gpu(x_arrays, y_arrays, x_pos)
+        with debug_log.benchmark("Legend: batch interpolation") as m:
+            interpolated_values = batch_interpolate_gpu(x_arrays, y_arrays, x_pos)
+            m['extra']['channels'] = len(x_arrays)
 
         # Build a map of (channel_name, log_idx) -> interpolated_value
         value_map = {}
@@ -1301,56 +1499,60 @@ class PlotWidget(QWidget):
             value_map[(channel_name, log_idx)] = interpolated_values[i]
 
         # Update legend labels using cached references where available
-        for channel_name in unique_channels:
-            # Try cached label first (O(1)), fall back to iteration if not cached
-            label = self._legend_label_cache.get(channel_name)
-            if label is None:
-                # Fallback: find label by iterating (and cache it for next time)
-                for sample, lbl in self.legend.items:
-                    parts = lbl.text.split(':', 1)
-                    if parts[0].strip() == channel_name:
-                        label = lbl
-                        self._legend_label_cache[channel_name] = label
-                        break
+        with debug_log.benchmark("Legend: update labels") as m:
+            labels_updated = 0
+            for channel_name in unique_channels:
+                # Try cached label first (O(1)), fall back to iteration if not cached
+                label = self._legend_label_cache.get(channel_name)
                 if label is None:
-                    continue
+                    # Fallback: find label by iterating (and cache it for next time)
+                    for sample, lbl in self.legend.items:
+                        parts = lbl.text.split(':', 1)
+                        if parts[0].strip() == channel_name:
+                            label = lbl
+                            self._legend_label_cache[channel_name] = label
+                            break
+                    if label is None:
+                        continue
 
-            # Collect values from all logs for this channel
-            values_list = []
-            unit_str = ''
-            channel_type = None
+                # Collect values from all logs for this channel
+                values_list = []
+                unit_str = ''
+                channel_type = None
 
-            for log_idx in range(max_log_index + 1):
-                plot_key = (channel_name, log_idx)
-                if plot_key in self.plot_items:
-                    plot_info = self.plot_items[plot_key]
-                    channel = plot_info['channel']
+                for log_idx in range(max_log_index + 1):
+                    plot_key = (channel_name, log_idx)
+                    if plot_key in self.plot_items:
+                        plot_info = self.plot_items[plot_key]
+                        channel = plot_info['channel']
 
-                    # Get unit from first available channel
-                    if channel_type is None:
-                        channel_type = channel.data_type
-                        if self.units_manager:
-                            unit = self.units_manager.get_unit(channel_name, use_preference=True, channel_type=channel_type)
-                            if unit:
-                                unit_str = f" {unit}"
+                        # Get unit from first available channel
+                        if channel_type is None:
+                            channel_type = channel.data_type
+                            if self.units_manager:
+                                unit = self.units_manager.get_unit(channel_name, use_preference=True, channel_type=channel_type)
+                                if unit:
+                                    unit_str = f" {unit}"
 
-                    # Get pre-interpolated value
-                    value = value_map.get(plot_key)
-                    if value is not None and not np.isnan(value):
-                        value_str = self._format_value(value, channel_name)
-                        values_list.append(value_str)
+                        # Get pre-interpolated value
+                        value = value_map.get(plot_key)
+                        if value is not None and not np.isnan(value):
+                            value_str = self._format_value(value, channel_name)
+                            values_list.append(value_str)
+                        else:
+                            values_list.append('--')
                     else:
+                        # Channel doesn't exist in this log
                         values_list.append('--')
-                else:
-                    # Channel doesn't exist in this log
-                    values_list.append('--')
 
-            # Format the label with all values side-by-side
-            if any(v != '--' for v in values_list):
-                values_display = ' | '.join(values_list)
-                label.setText(f"{channel_name}: {values_display}{unit_str}")
-            else:
-                label.setText(f"{channel_name}{unit_str}")
+                # Format the label with all values side-by-side
+                if any(v != '--' for v in values_list):
+                    values_display = ' | '.join(values_list)
+                    label.setText(f"{channel_name}: {values_display}{unit_str}")
+                else:
+                    label.setText(f"{channel_name}{unit_str}")
+                labels_updated += 1
+            m['extra']['labels'] = labels_updated
 
     def _format_value(self, value: float, channel_name: str = None) -> str:
         """

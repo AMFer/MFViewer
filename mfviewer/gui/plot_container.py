@@ -4,10 +4,88 @@ Container widget for managing multiple tiled plot widgets in a tab.
 
 from typing import List, Dict, Any
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSplitter
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QEvent
+from PyQt6.QtGui import QPainter, QPen, QColor
 
 from mfviewer.gui.plot_widget import PlotWidget
 from mfviewer.data.parser import ChannelInfo, TelemetryData
+
+
+class ContainerCursorOverlay(QWidget):
+    """
+    Single cursor overlay that spans the entire PlotContainer.
+
+    Instead of each plot having its own cursor overlay, this single widget
+    draws cursor lines for ALL plots in one paint operation - dramatically
+    reducing the number of Qt repaints needed.
+    """
+
+    def __init__(self, container: 'PlotContainer', parent=None):
+        super().__init__(parent)
+        self._container = container
+        self._x_data_pos = None  # Cursor position in data coordinates
+        self._pen = QPen(QColor(255, 255, 0), 1)
+
+        # Make overlay transparent to mouse events
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet("background: transparent;")
+
+    def set_x(self, x_pos: float):
+        """Set cursor X position in data coordinates."""
+        self._x_data_pos = x_pos
+        self.update()  # Single repaint for all cursor lines
+
+    def paintEvent(self, event):
+        """Draw cursor lines for all plots in a single paint operation."""
+        if self._x_data_pos is None:
+            return
+
+        painter = QPainter(self)
+        painter.setPen(self._pen)
+
+        # Draw cursor line for each plot widget
+        for plot_widget in self._container.plot_widgets:
+            self._draw_cursor_for_plot(painter, plot_widget)
+
+        painter.end()
+
+    def _draw_cursor_for_plot(self, painter: QPainter, plot_widget: PlotWidget):
+        """Draw cursor line for a single plot."""
+        # Get the inner pg.PlotWidget
+        pg_widget = plot_widget.plot_widget
+
+        # Get view box for coordinate mapping
+        view_box = pg_widget.getViewBox()
+        if view_box is None:
+            return
+
+        # Get view range
+        view_range = view_box.viewRange()
+        x_range = view_range[0]
+
+        if x_range[1] == x_range[0]:
+            return
+
+        # Get the plot area bounds in scene coordinates
+        view_rect = view_box.sceneBoundingRect()
+
+        # Map scene coordinates to pg_widget's viewport coordinates
+        top_left_in_pgwidget = pg_widget.mapFromScene(view_rect.topLeft())
+        bottom_right_in_pgwidget = pg_widget.mapFromScene(view_rect.bottomRight())
+
+        # Map from pg_widget's coordinates to container's coordinates
+        top_left = pg_widget.mapTo(self._container, top_left_in_pgwidget)
+        bottom_right = pg_widget.mapTo(self._container, bottom_right_in_pgwidget)
+
+        # Calculate X pixel position based on data coordinates
+        x_frac = (self._x_data_pos - x_range[0]) / (x_range[1] - x_range[0])
+        x_pixel = top_left.x() + x_frac * (bottom_right.x() - top_left.x())
+
+        # Only draw if within bounds
+        if top_left.x() <= x_pixel <= bottom_right.x():
+            painter.drawLine(int(x_pixel), int(top_left.y()),
+                           int(x_pixel), int(bottom_right.y()))
 
 
 class PlotContainer(QWidget):
@@ -41,8 +119,32 @@ class PlotContainer(QWidget):
         """)
         layout.addWidget(self.splitter)
 
+        # Create container-level cursor overlay (single widget for all plots)
+        self.cursor_overlay = ContainerCursorOverlay(self, self)
+        self.cursor_overlay.setVisible(False)
+        self.cursor_overlay.raise_()  # Ensure it's on top
+
         # Add initial plot
         self._add_plot()
+
+    def resizeEvent(self, event):
+        """Handle resize to update cursor overlay geometry."""
+        super().resizeEvent(event)
+        if hasattr(self, 'cursor_overlay') and self.cursor_overlay:
+            self.cursor_overlay.setGeometry(self.rect())
+            self.cursor_overlay.raise_()
+
+    def set_cursor_position(self, x_pos: float):
+        """
+        Set cursor position using container-level overlay.
+
+        This method should be called by the global sync to update
+        the single cursor overlay for all plots.
+        """
+        if self.cursor_overlay:
+            self.cursor_overlay.setVisible(True)
+            self.cursor_overlay.setGeometry(self.rect())
+            self.cursor_overlay.set_x(x_pos)
 
     def add_plot(self):
         """Add a new plot widget to the container (public method for context menu)."""
@@ -133,6 +235,8 @@ class PlotContainer(QWidget):
             else:
                 # Fallback to single telemetry - time offset is already applied to data
                 focused_plot.add_channel(channel, telemetry)
+            # Synchronize Y-axis widths after adding channel
+            self.synchronize_y_axis_widths()
 
     def get_all_plot_widgets(self) -> List[PlotWidget]:
         """Get all plot widgets in this container."""
@@ -215,6 +319,9 @@ class PlotContainer(QWidget):
         if self.sync_callback:
             self.sync_callback()
 
+        # Synchronize Y-axis widths so cursors align
+        self.synchronize_y_axis_widths()
+
     def refresh_with_new_telemetry(self, new_telemetry: TelemetryData):
         """
         Refresh all plot widgets with new telemetry data.
@@ -226,6 +333,8 @@ class PlotContainer(QWidget):
         self.telemetry = new_telemetry
         for plot in self.plot_widgets:
             plot.refresh_with_new_telemetry(new_telemetry)
+        # Synchronize Y-axis widths after refresh
+        self.synchronize_y_axis_widths()
 
     def clear_all_plots(self):
         """Clear all data from all plot widgets."""
@@ -236,6 +345,8 @@ class PlotContainer(QWidget):
         """Refresh all plot widgets with new unit conversions."""
         for plot in self.plot_widgets:
             plot.refresh_with_new_units()
+        # Synchronize Y-axis widths after refresh
+        self.synchronize_y_axis_widths()
 
     def _on_cursor_moved(self, x_pos: float):
         """
@@ -256,3 +367,27 @@ class PlotContainer(QWidget):
         if self.sync_callback:
             # The sync_callback is for X-axis linking, we'd need a separate one for cursor
             pass
+
+    def synchronize_y_axis_widths(self):
+        """
+        Synchronize Y-axis widths across all plots in this container.
+
+        Finds the maximum Y-axis width among all plots and sets all plots
+        to use that width. This ensures cursors align vertically across plots.
+        """
+        if not self.plot_widgets:
+            return
+
+        # Find the maximum Y-axis width
+        max_width = 0
+        for plot in self.plot_widgets:
+            width = plot.get_y_axis_width()
+            if width > max_width:
+                max_width = width
+
+        # Set all plots to use the maximum width (with a small margin)
+        if max_width > 0:
+            # Add a small margin to ensure everything fits
+            target_width = max_width + 5
+            for plot in self.plot_widgets:
+                plot.set_y_axis_width(target_width)
