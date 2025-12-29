@@ -4,7 +4,7 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 
 ## Features
 
-### Performance Optimizations (v0.5.2)
+### Performance Optimizations
 - **Polars Backend**: Uses Polars for 10-100x faster CSV loading compared to pandas
 - **Parquet Caching**: Automatically caches parsed files as Parquet for instant repeat loads
 - **Background Loading**: File loading runs in a background thread with progress feedback - UI stays responsive
@@ -49,6 +49,21 @@ A Python-based desktop application for viewing and analyzing telemetry log files
   - Checkbox interface for instant log visibility toggle
   - All log data stored in memory for responsive switching
 
+### Fuel VE Map Calculator
+- **VE Correction Analysis**: Calculate volumetric efficiency corrections from telemetry data
+  - Load base VE map from CSV (supports TPS and MAP-based load axes)
+  - Analyze logged Lambda/AFR data against target values
+  - Visualize corrections with color-coded heatmaps (red = add fuel, green = less fuel)
+  - View hit count heatmap to see data coverage
+  - View Lambda error heatmap for tuning insights
+- **Intelligent Data Processing**:
+  - Automatic AFR/Lambda detection and conversion
+  - Supports multiple fuel types (gasoline, E85, methanol) via user preferences
+  - Configurable minimum sample threshold for reliable corrections
+  - Double-click cells to remove individual corrections
+- **Save Corrected Maps**: Export corrected VE maps to CSV for ECU import
+- **Persistent Settings**: Min samples setting saved between sessions
+
 ### Core Features
 - **Haltech ECU Data Support**: Native support for Haltech ECU log files with automatic unit conversions
 - **Data Parsing**: Parses CSV log files with metadata and channel information
@@ -92,7 +107,7 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 
 ### For End Users (Windows)
 
-1. Download the latest installer: `MFViewer-Setup-0.5.2.exe`
+1. Download the latest installer: `MFViewer-Setup-0.5.3.exe`
 2. Run the installer and follow the prompts
 3. Launch MFViewer from the Start Menu or Desktop shortcut
 
@@ -206,6 +221,7 @@ python -m mfviewer.main
 - **Ctrl+Shift+T**: Time synchronization dialog
 - **F2**: Rename current tab
 - **Ctrl+Q**: Quit application
+- **Ctrl+Shift+V**: Open Fuel VE Map Calculator
 
 #### Cursor Navigation
 - **Left/Right Arrow**: Move cursor by 1 pixel (precise navigation)

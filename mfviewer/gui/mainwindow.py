@@ -22,6 +22,7 @@ from mfviewer.gui.plot_container import PlotContainer
 from mfviewer.gui.preferences_dialog import PreferencesDialog
 from mfviewer.gui.channel_text_mapping_dialog import ChannelTextMappingDialog
 from mfviewer.gui.debug_settings_dialog import DebugSettingsDialog
+from mfviewer.gui.ve_map_dialog import VEMapDialog
 from mfviewer.utils.config import TabConfiguration
 from mfviewer.utils.units import UnitsManager
 from mfviewer.utils import debug_log
@@ -603,6 +604,12 @@ class MainWindow(QMainWindow):
         text_mapping_action.setShortcut(QKeySequence("Ctrl+T"))
         text_mapping_action.triggered.connect(self._show_channel_text_mapping)
         tools_menu.addAction(text_mapping_action)
+
+        # VE Map Calculator
+        ve_map_action = QAction("Fuel &VE Map Calculator...", self)
+        ve_map_action.setShortcut(QKeySequence("Ctrl+M"))
+        ve_map_action.triggered.connect(self._show_ve_map_dialog)
+        tools_menu.addAction(ve_map_action)
 
         tools_menu.addSeparator()
 
@@ -1568,7 +1575,7 @@ class MainWindow(QMainWindow):
             log_files_data.append({
                 'path': str(log_file.file_path),
                 'active': log_file.is_active,
-                'time_offset': log_file.time_offset
+                'time_offset': 0.0  # Reserved for future time sync feature
             })
 
         # Save session
@@ -1803,7 +1810,10 @@ class MainWindow(QMainWindow):
             # Refresh all plots to show new text labels
             self._refresh_all_plots()
 
-            self.statusbar.showMessage("Channel text mappings updated", 3000)
+    def _show_ve_map_dialog(self):
+        """Show the Fuel VE Map Calculator dialog."""
+        dialog = VEMapDialog(self.log_manager, self.units_manager, self)
+        dialog.exec()
 
     def _refresh_all_plots(self):
         """
