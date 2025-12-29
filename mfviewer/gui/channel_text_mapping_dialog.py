@@ -36,7 +36,7 @@ class ChannelTextMappingDialog(QDialog):
 
         self.setWindowTitle("Channel Text Mapping")
         self.setMinimumWidth(800)
-        self.setMinimumHeight(600)
+        self.setMinimumHeight(700)
 
         self._setup_ui()
         self._apply_dark_theme()
@@ -611,6 +611,15 @@ class ChannelTextMappingDialog(QDialog):
             QTableWidget::item:selected {
                 background-color: #094771;
                 color: #ffffff;
+            }
+            QTableWidget QLineEdit {
+                background-color: #3c3c3c;
+                color: #dcdcdc;
+                border: 1px solid #007acc;
+                padding: 2px 4px;
+                margin: 0px;
+                selection-background-color: #094771;
+                selection-color: #ffffff;
             }
             QHeaderView::section {
                 background-color: #333333;

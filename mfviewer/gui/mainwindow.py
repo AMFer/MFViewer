@@ -742,6 +742,12 @@ class MainWindow(QMainWindow):
                 # Refresh all existing plots
                 self._refresh_all_plots()
 
+            # Check if we have more log files to load (from session restore)
+            if hasattr(self, '_pending_log_files') and self._pending_log_files:
+                # Load the next log file after a short delay to allow UI to update
+                next_log = self._pending_log_files.pop(0)
+                QTimer.singleShot(100, lambda: self.open_file(next_log['path']))
+
             # Update status bar with backend info
             time_range = telemetry.get_time_range()
             duration = time_range[1] - time_range[0]
@@ -1435,20 +1441,35 @@ class MainWindow(QMainWindow):
             self.current_config_file = Path(last_config_file)
             self._update_config_label()
 
-        # Restore last log file
-        last_log_file = session_data.get('last_log_file')
-        if last_log_file and Path(last_log_file).exists():
+        # Store pending tabs data to be restored after files load
+        tabs_data = session_data.get('tabs', [])
+        if tabs_data:
+            self._pending_tabs_data = tabs_data
+
+        # Check for multi-log session (version 1.1+)
+        log_files_data = session_data.get('log_files', [])
+        if log_files_data:
+            # Restore multiple log files
             try:
-                # Store pending tabs data to be restored after file loads
-                # (open_file now uses background thread, so we can't restore tabs immediately)
-                tabs_data = session_data.get('tabs', [])
-                if tabs_data:
-                    self._pending_tabs_data = tabs_data
-
-                self.open_file(last_log_file)
-
+                # Store log files info for sequential loading
+                self._pending_log_files = [
+                    lf for lf in log_files_data
+                    if Path(lf['path']).exists()
+                ]
+                if self._pending_log_files:
+                    # Load the first log file, rest will be loaded after
+                    first_log = self._pending_log_files.pop(0)
+                    self.open_file(first_log['path'])
             except Exception as e:
                 print(f"Failed to restore session: {e}")
+        else:
+            # Fallback to single log file (version 1.0 compatibility)
+            last_log_file = session_data.get('last_log_file')
+            if last_log_file and Path(last_log_file).exists():
+                try:
+                    self.open_file(last_log_file)
+                except Exception as e:
+                    print(f"Failed to restore session: {e}")
 
     def _restore_tabs_from_data(self, tabs_data: list):
         """Restore tabs from configuration data."""
@@ -1541,11 +1562,24 @@ class MainWindow(QMainWindow):
                 }
                 tabs_data.append(tab_data)
 
+        # Collect all log files from log_manager
+        log_files_data = []
+        for log_file in self.log_manager.log_files:
+            log_files_data.append({
+                'path': str(log_file.file_path),
+                'active': log_file.is_active,
+                'time_offset': log_file.time_offset
+            })
+
         # Save session
         session_file = str(TabConfiguration.get_session_file())
-        last_log_file = str(self.current_file) if self.current_file else None
+        # Use first log file for backwards compatibility
+        last_log_file = str(self.log_manager.log_files[0].file_path) if self.log_manager.log_files else None
         last_config_file = str(self.current_config_file) if self.current_config_file else None
-        TabConfiguration.save_session(session_file, tabs_data, last_log_file, self.last_directory, last_config_file)
+        TabConfiguration.save_session(
+            session_file, tabs_data, last_log_file, self.last_directory,
+            last_config_file, log_files_data
+        )
 
     def closeEvent(self, event):
         """Handle window close event to save session."""
@@ -1622,7 +1656,14 @@ class MainWindow(QMainWindow):
                 try:
                     for plot_widget in all_plot_widgets:
                         if plot_widget != source_widget:
-                            plot_widget.plot_widget.setXRange(x_range[0], x_range[1], padding=0)
+                            # Check if the widget and its ViewBox still exist
+                            try:
+                                vb = plot_widget.plot_widget.getViewBox()
+                                if vb is not None:
+                                    plot_widget.plot_widget.setXRange(x_range[0], x_range[1], padding=0)
+                            except (RuntimeError, AttributeError):
+                                # Widget has been deleted, skip it
+                                pass
                 finally:
                     self._syncing_x_range = False
             return sync_x_range

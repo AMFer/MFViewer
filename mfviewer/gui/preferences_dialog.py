@@ -22,7 +22,7 @@ class PreferencesDialog(QDialog):
         self.unit_combos: Dict[str, QComboBox] = {}
         self.multiplier_spinboxes: Dict[str, QDoubleSpinBox] = {}
 
-        self.setWindowTitle("Preferences")
+        self.setWindowTitle("Units")
         self.setMinimumWidth(700)
         self.setMinimumHeight(750)
 
@@ -78,10 +78,11 @@ class PreferencesDialog(QDialog):
         # Map of default multipliers/divisors for each type
         type_multipliers = {
             'Pressure': 10.0,
+            'MAP_Pressure': 10.0,
             'AbsPressure': 10.0,
             'Temperature': 10.0,
             'Angle': 10.0,
-            'Current_mA_as_A': 1000.0,
+            'Current': 1000.0,
             'BatteryVoltage': 1000.0,
             'AFR': 1000.0,
             'EngineSpeed': 1.0,

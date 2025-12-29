@@ -85,24 +85,27 @@ class TabConfiguration:
 
     @staticmethod
     def save_session(file_path: str, tabs_data: List[Dict[str, Any]], last_log_file: Optional[str] = None,
-                    last_directory: Optional[str] = None, last_config_file: Optional[str] = None) -> bool:
+                    last_directory: Optional[str] = None, last_config_file: Optional[str] = None,
+                    log_files: Optional[List[Dict[str, Any]]] = None) -> bool:
         """
         Save session state (last file + tab config).
 
         Args:
             file_path: Path to save the session file
             tabs_data: List of tab configurations
-            last_log_file: Path to the last opened log file
+            last_log_file: Path to the last opened log file (for backwards compatibility)
             last_directory: Last directory used for file dialogs
             last_config_file: Path to the last loaded tab configuration file
+            log_files: List of log file info dicts with 'path', 'active', 'time_offset'
 
         Returns:
             True if successful, False otherwise
         """
         try:
             session = {
-                'version': '1.0',
-                'last_log_file': last_log_file,
+                'version': '1.1',  # Bump version for multi-log support
+                'last_log_file': last_log_file,  # Keep for backwards compatibility
+                'log_files': log_files or [],  # New: list of all log files
                 'last_directory': last_directory,
                 'last_config_file': last_config_file,
                 'tabs': tabs_data
@@ -139,12 +142,13 @@ class TabConfiguration:
                 print("Invalid session file format")
                 return None
 
-            if session['version'] != '1.0':
+            if session['version'] not in ('1.0', '1.1'):
                 print(f"Unsupported session version: {session['version']}")
                 return None
 
             return {
                 'last_log_file': session.get('last_log_file'),
+                'log_files': session.get('log_files', []),  # New: list of all log files
                 'last_directory': session.get('last_directory'),
                 'last_config_file': session.get('last_config_file'),
                 'tabs': session.get('tabs', [])

@@ -22,6 +22,8 @@ import json
 # Import pandas as base (always available)
 import pandas as pd
 
+from mfviewer.utils import debug_log
+
 # Try to import GPU-accelerated libraries
 CUDF_AVAILABLE = False
 POLARS_AVAILABLE = False
@@ -250,21 +252,26 @@ class MFLogParser:
             FileNotFoundError: If the log file doesn't exist
             ValueError: If the file format is invalid
         """
+        debug_log.info(f"Parsing file: {self.file_path}")
+
         if not self.file_path.exists():
             raise FileNotFoundError(f"Log file not found: {self.file_path}")
 
         # Try to load from cache first
         if self.use_cache:
             self.progress_callback(5, "Checking cache...")
-            cached = get_cache().get_cached(self.file_path)
+            with debug_log.benchmark("Cache lookup"):
+                cached = get_cache().get_cached(self.file_path)
             if cached is not None:
                 self.progress_callback(10, "Loading from cache...")
-                df, channel_dicts, self.metadata = cached
-                self.data = df
-                self.channels = [
-                    ChannelInfo(**ch) for ch in channel_dicts
-                ]
+                with debug_log.benchmark("Load from cache"):
+                    df, channel_dicts, self.metadata = cached
+                    self.data = df
+                    self.channels = [
+                        ChannelInfo(**ch) for ch in channel_dicts
+                    ]
                 self.progress_callback(100, "Loaded from cache")
+                debug_log.info(f"Loaded from cache: {len(self.data)} rows, {len(self.channels)} channels")
                 return TelemetryData(
                     data=self.data,
                     channels=self.channels,
@@ -275,32 +282,40 @@ class MFLogParser:
 
         # Parse metadata and channel definitions
         self.progress_callback(10, "Parsing metadata...")
-        self._parse_metadata()
+        with debug_log.benchmark("Parse metadata"):
+            self._parse_metadata()
 
         # Parse data section using best available backend
         self.progress_callback(20, f"Loading data ({get_parser_backend()})...")
-        self._parse_data()
+        with debug_log.benchmark(f"Parse data ({get_parser_backend()})") as m:
+            self._parse_data()
+            m['extra']['rows'] = len(self.data) if self.data is not None else 0
 
         # Process time column with vectorized operations
         self.progress_callback(70, "Processing time column...")
-        self._process_time_column_vectorized()
+        with debug_log.benchmark("Process time column"):
+            self._process_time_column_vectorized()
 
         # Pre-compute channel statistics for faster auto-scale
         self.progress_callback(80, "Computing channel statistics...")
-        self._compute_channel_statistics()
+        with debug_log.benchmark("Compute channel statistics"):
+            self._compute_channel_statistics()
 
         # Pre-compute downsampled data for LOD
         self.progress_callback(85, "Computing downsampled data...")
-        self._compute_downsampled_data()
+        with debug_log.benchmark("Compute downsampled data"):
+            self._compute_downsampled_data()
 
         # Save to cache for future loads
         if self.use_cache:
             self.progress_callback(95, "Saving to cache...")
-            get_cache().save_to_cache(
-                self.file_path, self.data, self.channels, self.metadata
-            )
+            with debug_log.benchmark("Save to cache"):
+                get_cache().save_to_cache(
+                    self.file_path, self.data, self.channels, self.metadata
+                )
 
         self.progress_callback(100, "Complete")
+        debug_log.info(f"Parse complete: {len(self.data)} rows, {len(self.channels)} channels")
         return TelemetryData(
             data=self.data,
             channels=self.channels,

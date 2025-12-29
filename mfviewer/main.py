@@ -10,6 +10,7 @@ from PyQt6.QtCore import Qt, QRect
 from PyQt6.QtGui import QPixmap, QPalette, QColor, QPainter, QFont
 
 from mfviewer.gui.mainwindow import MainWindow
+from mfviewer.utils import debug_log
 
 # Version number
 VERSION = "0.5.1"
@@ -65,6 +66,9 @@ def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
+
+    # Initialize debug logging from saved settings
+    debug_log.init_from_settings()
 
     # Create application
     app = QApplication(sys.argv)
@@ -134,7 +138,12 @@ def main():
             print(f"Warning: File not found: {args.file}")
 
     # Run event loop
-    sys.exit(app.exec())
+    exit_code = app.exec()
+
+    # Shutdown debug logging
+    debug_log.shutdown()
+
+    sys.exit(exit_code)
 
 
 if __name__ == '__main__':

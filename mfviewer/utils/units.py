@@ -23,6 +23,7 @@ class UnitsManager:
         # Map log file type names to standard unit names
         self.type_to_unit_map = {
             'Pressure': 'kPa',
+            'MAP_Pressure': 'kPa (MAP)',  # Separate unit preference for MAP/Manifold channels
             'AbsPressure': 'kPa (Abs)',
             'Temperature': 'K',
             'EngineSpeed': 'RPM',
@@ -33,7 +34,7 @@ class UnitsManager:
             'AFR': 'λ',
             'Time_us': 'μs',
             'Time_ms': 'ms',
-            'Current_mA_as_A': 'A',  # Current in Amps (raw values are mA, need /1000)
+            'Current': 'A',  # Current in Amps (raw values are mA, need /1000)
             'Raw': 'raw',
             # Add more mappings as needed
         }
@@ -66,6 +67,11 @@ class UnitsManager:
                 'kPa': lambda x: x,
                 'psi': lambda x: x * 0.145038,
                 'bar': lambda x: x * 0.01,
+            },
+            'kPa (MAP)': {  # MAP/Manifold Pressure from kPa (separate preference)
+                'kPa (MAP)': lambda x: x,
+                'psi (MAP)': lambda x: x * 0.145038,
+                'bar (MAP)': lambda x: x * 0.01,
             },
             'kPa (Abs)': {  # Absolute pressure from kPa
                 'kPa (Abs)': lambda x: x,
@@ -103,6 +109,7 @@ class UnitsManager:
         self.default_preferences = {
             'K': '°C',  # Temperature in Celsius by default
             'kPa': 'psi',  # Pressure in psi
+            'kPa (MAP)': 'psi (MAP)',  # MAP/Manifold pressure in psi
             'kPa (Abs)': 'psi (Abs)',  # Absolute pressure in psi
             'km/h': 'mph',  # Speed in mph
             'L': 'gal',  # Volume in gallons
@@ -531,6 +538,11 @@ class UnitsManager:
             # Inverse: x * 10 + 1013 - convert back to raw absolute pressure
             self.channel_inverse_conversions[ch_name] = lambda x: x * 10 + 1013 if not np.isnan(x) else x
 
+    def _is_map_channel(self, channel_name: str) -> bool:
+        """Check if a channel is a MAP/Manifold pressure channel."""
+        name_lower = channel_name.lower()
+        return 'map' in name_lower or 'manifold' in name_lower
+
     def get_unit(self, channel_name: str, use_preference: bool = True, channel_type: str = None) -> str:
         """
         Get the unit for a channel.
@@ -545,7 +557,11 @@ class UnitsManager:
         """
         # Use channel_type from log file if provided, otherwise fall back to Haltech CSV
         if channel_type:
-            base_unit = self.type_to_unit_map.get(channel_type, channel_type)
+            # Check if this is a MAP/Manifold pressure channel - use separate unit preference
+            if channel_type == 'Pressure' and self._is_map_channel(channel_name):
+                base_unit = self.type_to_unit_map.get('MAP_Pressure', 'kPa (MAP)')
+            else:
+                base_unit = self.type_to_unit_map.get(channel_type, channel_type)
         else:
             base_unit = self.channel_units.get(channel_name, '')
 
@@ -742,7 +758,11 @@ class UnitsManager:
         """
         # Map channel_type from log file to base unit (e.g., 'Pressure' -> 'kPa')
         if channel_type:
-            base_unit = self.type_to_unit_map.get(channel_type, channel_type)
+            # Check if this is a MAP/Manifold pressure channel - use separate unit preference
+            if channel_type == 'Pressure' and self._is_map_channel(channel_name):
+                base_unit = self.type_to_unit_map.get('MAP_Pressure', 'kPa (MAP)')
+            else:
+                base_unit = self.type_to_unit_map.get(channel_type, channel_type)
         else:
             base_unit = self.get_base_unit(channel_name)
 

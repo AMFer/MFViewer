@@ -527,7 +527,12 @@ class PlotWidget(QWidget):
             elif event.type() == QEvent.Type.Drop:
                 if event.mimeData().hasText():
                     channel_name = event.mimeData().text()
-                    if self.telemetry:
+                    # Use log_manager to add from all active logs if available
+                    if self.log_manager:
+                        self.add_channel_from_all_logs(channel_name, self.log_manager)
+                        event.acceptProposedAction()
+                        return True
+                    elif self.telemetry:
                         channel = self.telemetry.get_channel(channel_name)
                         if channel:
                             self.add_channel(channel, self.telemetry)
