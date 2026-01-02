@@ -10,10 +10,11 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QTabWidget, QFileDialog, QMessageBox,
     QStatusBar, QTreeWidget, QTreeWidgetItem,
-    QLabel, QPushButton, QInputDialog, QMenu, QDialog, QProgressDialog
+    QLabel, QPushButton, QInputDialog, QMenu, QDialog, QProgressDialog,
+    QLineEdit, QListWidget, QListWidgetItem, QStackedWidget, QToolButton
 )
 from PyQt6.QtCore import Qt, QSize, QCoreApplication, QThread, pyqtSignal
-from PyQt6.QtGui import QAction, QKeySequence, QPalette, QColor, QCloseEvent, QPixmap
+from PyQt6.QtGui import QAction, QKeySequence, QPalette, QColor, QCloseEvent, QPixmap, QDrag
 
 from mfviewer.data.parser import MFLogParser, TelemetryData, get_parser_backend
 from mfviewer.data.log_manager import LogFileManager
@@ -107,6 +108,156 @@ class ChannelTreeWidget(QTreeWidget):
                 return
         else:
             super().startDrag(supportedActions)
+
+
+class ChannelListWidget(QListWidget):
+    """Custom QListWidget that supports drag-and-drop of channel data."""
+
+    def startDrag(self, supportedActions):
+        """Start drag operation with channel name as mime data."""
+        item = self.currentItem()
+        if item:
+            channel = item.data(Qt.ItemDataRole.UserRole)
+            if channel:
+                from PyQt6.QtCore import QMimeData
+
+                drag = QDrag(self)
+                mime_data = QMimeData()
+                mime_data.setText(channel.name)
+                drag.setMimeData(mime_data)
+                drag.exec(Qt.DropAction.CopyAction)
+
+
+class ChannelSearchWidget(QWidget):
+    """Widget with search bar and flat list of channels."""
+
+    channel_double_clicked = pyqtSignal(object)  # Emits channel object
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.all_channels = []  # Store all channels for filtering
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        # Search bar with dark mode styling
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Search channels...")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._filter_channels)
+        self.search_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: #3c3c3c;
+                color: #ffffff;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                padding: 4px 8px;
+                selection-background-color: #094771;
+            }
+            QLineEdit:focus {
+                border-color: #007acc;
+            }
+            QLineEdit::placeholder {
+                color: #888888;
+            }
+        """)
+        layout.addWidget(self.search_edit)
+
+        # Channel list with dark mode styling
+        self.channel_list = ChannelListWidget()
+        self.channel_list.setDragEnabled(True)
+        self.channel_list.setDragDropMode(QListWidget.DragDropMode.DragOnly)
+        self.channel_list.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self.channel_list.setStyleSheet("""
+            QListWidget {
+                background-color: #252526;
+                color: #ffffff;
+                border: 1px solid #3e3e42;
+                border-radius: 3px;
+                outline: none;
+            }
+            QListWidget::item {
+                padding: 4px 8px;
+                border: none;
+            }
+            QListWidget::item:selected {
+                background-color: #094771;
+                color: #ffffff;
+            }
+            QListWidget::item:hover:!selected {
+                background-color: #2a2d2e;
+            }
+            QScrollBar:vertical {
+                background-color: #1e1e1e;
+                width: 12px;
+                border: none;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #5a5a5a;
+                min-height: 20px;
+                border-radius: 3px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #787878;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+            QScrollBar:horizontal {
+                background-color: #1e1e1e;
+                height: 12px;
+                border: none;
+            }
+            QScrollBar::handle:horizontal {
+                background-color: #5a5a5a;
+                min-width: 20px;
+                border-radius: 3px;
+                margin: 2px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background-color: #787878;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                width: 0px;
+            }
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                background: none;
+            }
+        """)
+        layout.addWidget(self.channel_list)
+
+    def set_channels(self, channels):
+        """Set the list of available channels."""
+        self.all_channels = sorted(channels, key=lambda c: c.name.lower())
+        self._filter_channels(self.search_edit.text())
+
+    def _filter_channels(self, text: str):
+        """Filter channel list based on search text."""
+        self.channel_list.clear()
+        search_lower = text.lower()
+
+        for channel in self.all_channels:
+            if not text or search_lower in channel.name.lower():
+                item = QListWidgetItem(channel.name)
+                item.setData(Qt.ItemDataRole.UserRole, channel)
+                self.channel_list.addItem(item)
+
+    def _on_item_double_clicked(self, item: QListWidgetItem):
+        """Handle double-click on channel item."""
+        channel = item.data(Qt.ItemDataRole.UserRole)
+        if channel:
+            self.channel_double_clicked.emit(channel)
+
+    def clear(self):
+        """Clear all channels."""
+        self.all_channels = []
+        self.channel_list.clear()
+        self.search_edit.clear()
 
 
 class MainWindow(QMainWindow):
@@ -424,18 +575,73 @@ class MainWindow(QMainWindow):
         self.log_list_widget.log_context_menu.connect(self._on_log_context_menu)
         left_panel_splitter.addWidget(self.log_list_widget)
 
-        # Channel tree (bottom)
-        self.channel_tree = ChannelTreeWidget()
-        self.channel_tree.setHeaderLabel("Channels")
-        self.channel_tree.setMinimumWidth(200)
-        self.channel_tree.setMaximumWidth(400)
-        self.channel_tree.itemDoubleClicked.connect(self._on_channel_double_clicked)
+        # Channel panel (bottom) - contains header with toggle and stacked views
+        channel_panel = QWidget()
+        channel_panel_layout = QVBoxLayout(channel_panel)
+        channel_panel_layout.setContentsMargins(0, 0, 0, 0)
+        channel_panel_layout.setSpacing(2)
 
-        # Enable drag and drop
+        # Header with label and view toggle button
+        channel_header = QWidget()
+        channel_header_layout = QHBoxLayout(channel_header)
+        channel_header_layout.setContentsMargins(4, 2, 4, 2)
+        channel_header_layout.setSpacing(4)
+
+        channel_label = QLabel("Channels")
+        channel_label.setStyleSheet("font-weight: bold; color: #cccccc;")
+        channel_header_layout.addWidget(channel_label)
+
+        channel_header_layout.addStretch()
+
+        # Toggle button for switching views
+        self.channel_view_toggle = QToolButton()
+        self.channel_view_toggle.setText("Tree")
+        self.channel_view_toggle.setToolTip("Switch to tree view (grouped by type)")
+        self.channel_view_toggle.setCheckable(False)
+        self.channel_view_toggle.clicked.connect(self._toggle_channel_view)
+        self.channel_view_toggle.setStyleSheet("""
+            QToolButton {
+                background-color: #3c3c3c;
+                color: #cccccc;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                padding: 2px 8px;
+                font-size: 11px;
+            }
+            QToolButton:hover {
+                background-color: #4a4a4a;
+                border-color: #007acc;
+            }
+        """)
+        channel_header_layout.addWidget(self.channel_view_toggle)
+
+        channel_panel_layout.addWidget(channel_header)
+
+        # Stacked widget for search view and tree view
+        self.channel_stack = QStackedWidget()
+
+        # Search view (index 0) - default
+        self.channel_search = ChannelSearchWidget()
+        self.channel_search.channel_double_clicked.connect(self._on_channel_selected)
+        self.channel_stack.addWidget(self.channel_search)
+
+        # Tree view (index 1)
+        self.channel_tree = ChannelTreeWidget()
+        self.channel_tree.setHeaderHidden(True)  # Hide header since we have our own
+        self.channel_tree.itemDoubleClicked.connect(self._on_channel_double_clicked)
         self.channel_tree.setDragEnabled(True)
         self.channel_tree.setDragDropMode(ChannelTreeWidget.DragDropMode.DragOnly)
+        self.channel_stack.addWidget(self.channel_tree)
 
-        left_panel_splitter.addWidget(self.channel_tree)
+        # Start with search view (index 0)
+        self.channel_stack.setCurrentIndex(0)
+
+        channel_panel_layout.addWidget(self.channel_stack)
+
+        channel_panel.setMinimumWidth(200)
+        channel_panel.setMaximumWidth(400)
+
+        left_panel_splitter.addWidget(channel_panel)
 
         # Set initial sizes for log list and channel tree (25% / 75%)
         left_panel_splitter.setSizes([100, 300])
@@ -466,7 +672,7 @@ class MainWindow(QMainWindow):
         self.new_tab_button = QPushButton("+")
         self.new_tab_button.setMaximumSize(30, 30)
         self.new_tab_button.setToolTip("Create new plot tab")
-        self.new_tab_button.clicked.connect(self._create_new_plot_tab)
+        self.new_tab_button.clicked.connect(lambda: self._create_new_plot_tab(auto_rename=True))
         corner_layout.addWidget(self.new_tab_button, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         # Add config file label
@@ -794,9 +1000,47 @@ class MainWindow(QMainWindow):
             self._loader_thread.deleteLater()
             self._loader_thread = None
 
+    def _toggle_channel_view(self):
+        """Toggle between search view and tree view."""
+        current_index = self.channel_stack.currentIndex()
+        if current_index == 0:
+            # Switch to tree view
+            self.channel_stack.setCurrentIndex(1)
+            self.channel_view_toggle.setText("Search")
+            self.channel_view_toggle.setToolTip("Switch to search view (flat list with filter)")
+        else:
+            # Switch to search view
+            self.channel_stack.setCurrentIndex(0)
+            self.channel_view_toggle.setText("Tree")
+            self.channel_view_toggle.setToolTip("Switch to tree view (grouped by type)")
+
+    def _on_channel_selected(self, channel):
+        """Handle channel selection from search widget - plot from ALL active logs."""
+        # Get current plot widget
+        current_widget = self.tab_widget.currentWidget()
+
+        if isinstance(current_widget, PlotContainer):
+            # Find focused plot or use last one
+            focused_plot = None
+            for plot in current_widget.plot_widgets:
+                if plot.hasFocus() or plot.underMouse():
+                    focused_plot = plot
+                    break
+
+            if not focused_plot and current_widget.plot_widgets:
+                focused_plot = current_widget.plot_widgets[-1]
+
+            if focused_plot:
+                focused_plot.add_channel_from_all_logs(channel.name, self.log_manager)
+
+        elif isinstance(current_widget, PlotWidget):
+            # Legacy support
+            current_widget.add_channel_from_all_logs(channel.name, self.log_manager)
+
     def _populate_channel_tree(self):
-        """Populate the channel tree with MAIN log's channels."""
+        """Populate both channel views with MAIN log's channels."""
         self.channel_tree.clear()
+        self.channel_search.clear()
 
         main_log = self.log_manager.get_main_log()
         if not main_log:
@@ -804,7 +1048,10 @@ class MainWindow(QMainWindow):
 
         telemetry = main_log.telemetry
 
-        # Group channels by type
+        # Populate search widget with flat list
+        self.channel_search.set_channels(telemetry.channels)
+
+        # Group channels by type for tree
         type_groups = {}
         for channel in telemetry.channels:
             if channel.data_type not in type_groups:
@@ -1210,7 +1457,7 @@ class MainWindow(QMainWindow):
 
         # New tab action
         new_tab_action = QAction("New Tab", self)
-        new_tab_action.triggered.connect(self._create_new_plot_tab)
+        new_tab_action.triggered.connect(lambda: self._create_new_plot_tab(auto_rename=True))
         menu.addAction(new_tab_action)
 
         # Close tab action

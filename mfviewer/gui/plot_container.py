@@ -2,12 +2,13 @@
 Container widget for managing multiple tiled plot widgets in a tab.
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Union
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSplitter
 from PyQt6.QtCore import Qt, QEvent
 from PyQt6.QtGui import QPainter, QPen, QColor
 
 from mfviewer.gui.plot_widget import PlotWidget
+from mfviewer.gui.xy_plot_widget import XYPlotWidget
 from mfviewer.data.parser import ChannelInfo, TelemetryData
 
 
@@ -189,7 +190,7 @@ class PlotContainer(QWidget):
         if self.sync_callback:
             self.sync_callback()
 
-    def _remove_plot(self, plot_widget: PlotWidget):
+    def _remove_plot(self, plot_widget: Union[PlotWidget, XYPlotWidget]):
         """Remove a plot widget from the container."""
         if len(self.plot_widgets) <= 1:
             # Don't remove the last plot
@@ -199,6 +200,107 @@ class PlotContainer(QWidget):
             self.plot_widgets.remove(plot_widget)
             plot_widget.setParent(None)
             plot_widget.deleteLater()
+
+    def add_xy_plot(self):
+        """Add a new X-Y plot widget to the container."""
+        self._add_xy_plot()
+
+    def _add_xy_plot(self) -> XYPlotWidget:
+        """Add a new X-Y plot widget to the container."""
+        xy_widget = XYPlotWidget(units_manager=self.units_manager)
+
+        # Set telemetry data if available
+        if self.telemetry:
+            xy_widget.set_telemetry(self.telemetry)
+
+        # Set log manager for multi-log support
+        if self.log_manager:
+            xy_widget.log_manager = self.log_manager
+
+        # Set remove callback
+        xy_widget.remove_callback = self._remove_plot
+
+        # Set container reference for context menu access
+        xy_widget.container = self
+
+        self.plot_widgets.append(xy_widget)
+        self.splitter.addWidget(xy_widget)
+
+        # Distribute space evenly
+        sizes = [100] * len(self.plot_widgets)
+        self.splitter.setSizes(sizes)
+
+        return xy_widget
+
+    def convert_to_xy_plot(self, plot_widget: PlotWidget):
+        """Convert a time-series plot widget to an X-Y plot widget."""
+        if plot_widget not in self.plot_widgets:
+            return
+
+        # Get the index of the plot to replace
+        index = self.plot_widgets.index(plot_widget)
+
+        # Create new X-Y plot
+        xy_widget = XYPlotWidget(units_manager=self.units_manager)
+
+        if self.telemetry:
+            xy_widget.set_telemetry(self.telemetry)
+
+        if self.log_manager:
+            xy_widget.log_manager = self.log_manager
+
+        xy_widget.remove_callback = self._remove_plot
+        xy_widget.container = self
+
+        # Replace in list
+        self.plot_widgets[index] = xy_widget
+
+        # Replace in splitter
+        self.splitter.replaceWidget(index, xy_widget)
+
+        # Clean up old widget
+        plot_widget.setParent(None)
+        plot_widget.deleteLater()
+
+    def convert_to_time_plot(self, xy_widget: XYPlotWidget):
+        """Convert an X-Y plot widget back to a time-series plot widget."""
+        if xy_widget not in self.plot_widgets:
+            return
+
+        # Get the index of the plot to replace
+        index = self.plot_widgets.index(xy_widget)
+
+        # Create new time-series plot
+        plot_widget = PlotWidget(units_manager=self.units_manager)
+
+        if self.telemetry:
+            plot_widget.telemetry = self.telemetry
+
+        if self.log_manager:
+            plot_widget.log_manager = self.log_manager
+
+        plot_widget.exclude_outliers = True
+        plot_widget.remove_callback = self._remove_plot
+        plot_widget.container = self
+
+        if hasattr(self, '_global_cursor_sync'):
+            plot_widget.cursor_callback = self._global_cursor_sync
+        else:
+            plot_widget.cursor_callback = self._on_cursor_moved
+
+        # Replace in list
+        self.plot_widgets[index] = plot_widget
+
+        # Replace in splitter
+        self.splitter.replaceWidget(index, plot_widget)
+
+        # Clean up old widget
+        xy_widget.setParent(None)
+        xy_widget.deleteLater()
+
+        # Synchronize X-axis globally if callback is available
+        if self.sync_callback:
+            self.sync_callback()
 
     def set_layout_orientation(self, orientation: Qt.Orientation):
         """Set the layout orientation (horizontal or vertical tiling) - public method for context menu."""
@@ -332,7 +434,10 @@ class PlotContainer(QWidget):
         """
         self.telemetry = new_telemetry
         for plot in self.plot_widgets:
-            plot.refresh_with_new_telemetry(new_telemetry)
+            if isinstance(plot, XYPlotWidget):
+                plot.refresh_data(new_telemetry)
+            else:
+                plot.refresh_with_new_telemetry(new_telemetry)
         # Synchronize Y-axis widths after refresh
         self.synchronize_y_axis_widths()
 
@@ -344,7 +449,10 @@ class PlotContainer(QWidget):
     def refresh_with_new_units(self):
         """Refresh all plot widgets with new unit conversions."""
         for plot in self.plot_widgets:
-            plot.refresh_with_new_units()
+            if isinstance(plot, XYPlotWidget):
+                plot.refresh_data()  # XY plots refresh with current data
+            else:
+                plot.refresh_with_new_units()
         # Synchronize Y-axis widths after refresh
         self.synchronize_y_axis_widths()
 

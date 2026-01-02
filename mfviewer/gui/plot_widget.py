@@ -1225,7 +1225,20 @@ class PlotWidget(QWidget):
             add_plot_action = QAction("Add Plot", self)
             add_plot_action.triggered.connect(self.container.add_plot)
             menu.addAction(add_plot_action)
-            menu.addSeparator()
+
+        # Add X-Y plot action
+        if self.container and hasattr(self.container, 'add_xy_plot'):
+            add_xy_action = QAction("Add X-Y Plot", self)
+            add_xy_action.triggered.connect(self.container.add_xy_plot)
+            menu.addAction(add_xy_action)
+
+            # If this plot is empty, offer to convert it to X-Y plot
+            if not self.plot_items and hasattr(self.container, 'convert_to_xy_plot'):
+                convert_xy_action = QAction("Convert to X-Y Plot", self)
+                convert_xy_action.triggered.connect(lambda: self.container.convert_to_xy_plot(self))
+                menu.addAction(convert_xy_action)
+
+        menu.addSeparator()
 
         # Layout orientation actions (calls container's methods)
         if self.container and hasattr(self.container, 'set_layout_orientation'):

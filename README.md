@@ -64,6 +64,17 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 - **Save Corrected Maps**: Export corrected VE maps to CSV for ECU import
 - **Persistent Settings**: Min samples setting saved between sessions
 
+### X-Y Scatter Plots
+- **Channel vs Channel Plotting**: Create scatter plots to visualize relationships between any two channels
+  - Right-click on any plot and select "Add X-Y Plot" or "Convert to X-Y Plot"
+  - Drag channels from the channel list directly onto X and Y dropdown selectors
+  - Drop channels anywhere on the plot area to auto-fill X first, then Y
+  - Semi-transparent blue scatter points for easy pattern recognition
+- **Context Menu Options**:
+  - Convert back to time-series plot at any time
+  - Auto Scale, Clear Plot, Remove Plot options
+- **Unit Support**: Axis labels show channel names with their display units
+
 ### Core Features
 - **Haltech ECU Data Support**: Native support for Haltech ECU log files with automatic unit conversions
 - **Data Parsing**: Parses CSV log files with metadata and channel information
@@ -107,7 +118,7 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 
 ### For End Users (Windows)
 
-1. Download the latest installer: `MFViewer-Setup-0.5.3.exe`
+1. Download the latest installer: `MFViewer-Setup-0.5.4.exe`
 2. Run the installer and follow the prompts
 3. Launch MFViewer from the Start Menu or Desktop shortcut
 

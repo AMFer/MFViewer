@@ -13,7 +13,7 @@ from mfviewer.gui.mainwindow import MainWindow
 from mfviewer.utils import debug_log
 
 # Version number
-VERSION = "0.5.3"
+VERSION = "0.5.4"
 
 
 def get_resource_path(relative_path: str) -> Path:
