@@ -96,6 +96,14 @@ class XYPlotWidget(QWidget):
         # Plot data
         self.scatter_item = None
 
+        # Store full data arrays for filtering
+        self._time_data: Optional[np.ndarray] = None
+        self._x_data: Optional[np.ndarray] = None
+        self._y_data: Optional[np.ndarray] = None
+
+        # Current time range filter (None = show all)
+        self._time_range: Optional[Tuple[float, float]] = None
+
         self._setup_ui()
 
     def _setup_ui(self):
@@ -361,6 +369,11 @@ class XYPlotWidget(QWidget):
 
     def _update_plot(self):
         """Update the scatter plot with current channel selections."""
+        # Clear stored data
+        self._time_data = None
+        self._x_data = None
+        self._y_data = None
+
         # Clear existing scatter
         if self.scatter_item:
             self.plot_widget.removeItem(self.scatter_item)
@@ -385,10 +398,13 @@ class XYPlotWidget(QWidget):
                 return
             x_data = np.array(x_series.values, dtype=np.float32)
             y_data = np.array(y_series.values, dtype=np.float32)
+            # Time is stored as the DataFrame index (Seconds)
+            time_data = np.array(x_series.index.values, dtype=np.float32)
         elif hasattr(x_channel_info, 'data'):
             # Mock object with data attribute
             x_data = np.array(x_channel_info.data, dtype=np.float32)
             y_data = np.array(y_channel_info.data, dtype=np.float32)
+            time_data = None
         else:
             return
 
@@ -407,20 +423,20 @@ class XYPlotWidget(QWidget):
 
         # Remove NaN values
         valid_mask = ~(np.isnan(x_data) | np.isnan(y_data))
+        if time_data is not None:
+            valid_mask &= ~np.isnan(time_data)
+            time_data = time_data[valid_mask]
+
         x_data = x_data[valid_mask]
         y_data = y_data[valid_mask]
 
         if len(x_data) == 0:
             return
 
-        # Create scatter plot
-        self.scatter_item = pg.ScatterPlotItem(
-            x=x_data, y=y_data,
-            pen=None,
-            brush=pg.mkBrush(100, 150, 255, 120),
-            size=5
-        )
-        self.plot_widget.addItem(self.scatter_item)
+        # Store full data for filtering
+        self._time_data = time_data
+        self._x_data = x_data
+        self._y_data = y_data
 
         # Update axis labels
         x_unit = ""
@@ -439,8 +455,81 @@ class XYPlotWidget(QWidget):
         self.plot_widget.setLabel('bottom', x_label, color='#cccccc')
         self.plot_widget.setLabel('left', y_label, color='#cccccc')
 
-        # Auto-range
+        # Draw the scatter plot with current time filter
+        self._redraw_scatter()
+
+    def _redraw_scatter(self):
+        """Redraw scatter plot with current time range filter."""
+        # Clear existing scatter
+        if self.scatter_item:
+            self.plot_widget.removeItem(self.scatter_item)
+            self.scatter_item = None
+
+        if self._x_data is None or self._y_data is None:
+            return
+
+        # Apply time range filter if we have time data and a filter
+        if self._time_data is not None and self._time_range is not None:
+            t_min, t_max = self._time_range
+            mask = (self._time_data >= t_min) & (self._time_data <= t_max)
+            x_filtered = self._x_data[mask]
+            y_filtered = self._y_data[mask]
+        else:
+            x_filtered = self._x_data
+            y_filtered = self._y_data
+
+        if len(x_filtered) == 0:
+            return
+
+        # Create scatter plot
+        self.scatter_item = pg.ScatterPlotItem(
+            x=x_filtered, y=y_filtered,
+            pen=None,
+            brush=pg.mkBrush(100, 150, 255, 120),
+            size=5
+        )
+        self.plot_widget.addItem(self.scatter_item)
+
+        # Auto-range to show all filtered data
         self.plot_widget.autoRange()
+
+    def set_time_range(self, t_min: float, t_max: float):
+        """Set the time range filter for the scatter plot.
+
+        Only points whose corresponding time values fall within [t_min, t_max]
+        will be displayed. This allows the XY plot to sync with the visible
+        range of time-series plots.
+
+        Args:
+            t_min: Minimum time value
+            t_max: Maximum time value
+        """
+        self._time_range = (t_min, t_max)
+        self._redraw_scatter()
+
+    def clear_time_range(self):
+        """Clear the time range filter, showing all data points."""
+        self._time_range = None
+        self._redraw_scatter()
+
+    def get_y_axis_width(self) -> int:
+        """Get the current width of the Y-axis in pixels.
+
+        Returns:
+            Width of the Y-axis area in pixels
+        """
+        y_axis = self.plot_widget.getAxis('left')
+        return y_axis.width() if y_axis else 0
+
+    def set_y_axis_width(self, width: int):
+        """Set a fixed width for the Y-axis.
+
+        Args:
+            width: Width in pixels for the Y-axis
+        """
+        y_axis = self.plot_widget.getAxis('left')
+        if y_axis:
+            y_axis.setWidth(width)
 
     def _show_context_menu(self, position):
         """Show context menu for plot actions."""

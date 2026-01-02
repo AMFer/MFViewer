@@ -14,12 +14,13 @@ from PyQt6.QtWidgets import (
     QLineEdit, QListWidget, QListWidgetItem, QStackedWidget, QToolButton
 )
 from PyQt6.QtCore import Qt, QSize, QCoreApplication, QThread, pyqtSignal
-from PyQt6.QtGui import QAction, QKeySequence, QPalette, QColor, QCloseEvent, QPixmap, QDrag
+from PyQt6.QtGui import QAction, QKeySequence, QPalette, QColor, QCloseEvent, QPixmap, QDrag, QIcon
 
 from mfviewer.data.parser import MFLogParser, TelemetryData, get_parser_backend
 from mfviewer.data.log_manager import LogFileManager
 from mfviewer.gui.plot_widget import PlotWidget
 from mfviewer.gui.plot_container import PlotContainer
+from mfviewer.gui.xy_plot_widget import XYPlotWidget
 from mfviewer.gui.preferences_dialog import PreferencesDialog
 from mfviewer.gui.channel_text_mapping_dialog import ChannelTextMappingDialog
 from mfviewer.gui.debug_settings_dialog import DebugSettingsDialog
@@ -281,6 +282,11 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("MFViewer - Motorsports Fusion Telemetry Viewer")
         self.setMinimumSize(1200, 800)
+
+        # Set window icon
+        icon_path = get_resource_path('Assets/MFViewer.ico')
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
 
         self._apply_dark_theme()
         self._enable_dark_title_bar()
@@ -655,7 +661,9 @@ class MainWindow(QMainWindow):
         # Center panel: Tab widget for different views
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(False)  # Close via context menu only
+        self.tab_widget.setMovable(True)  # Allow tab reordering via drag
         self.tab_widget.tabCloseRequested.connect(self._close_tab)
+        self.tab_widget.tabBar().tabMoved.connect(self._on_tab_moved)
 
         # Enable context menu on tabs
         self.tab_widget.tabBar().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1387,6 +1395,16 @@ class MainWindow(QMainWindow):
         self.tab_widget.removeTab(index)
         widget.deleteLater()
 
+    def _on_tab_moved(self, from_index: int, to_index: int):
+        """Handle tab reordering via drag - update internal plot_tabs list."""
+        # Rebuild plot_tabs list to match new visual order
+        new_plot_tabs = []
+        for i in range(self.tab_widget.count()):
+            widget = self.tab_widget.widget(i)
+            if widget in self.plot_tabs:
+                new_plot_tabs.append(widget)
+        self.plot_tabs = new_plot_tabs
+
     def _rename_tab(self, index: int):
         """Rename a tab via double-click."""
         if index < 0:
@@ -1842,12 +1860,15 @@ class MainWindow(QMainWindow):
 
     def _synchronize_all_x_axes(self):
         """Synchronize X-axis across all plots in all tabs."""
-        # Collect all plot widgets from all tabs
+        # Collect all plot widgets from all tabs (excluding XYPlotWidget which has non-time X-axis)
         all_plot_widgets = []
         for i in range(self.tab_widget.count()):
             widget = self.tab_widget.widget(i)
             if isinstance(widget, PlotContainer):
-                all_plot_widgets.extend(widget.get_all_plot_widgets())
+                # Filter out XYPlotWidget instances
+                time_series_plots = [p for p in widget.get_all_plot_widgets()
+                                     if not isinstance(p, XYPlotWidget)]
+                all_plot_widgets.extend(time_series_plots)
             elif isinstance(widget, PlotWidget):
                 all_plot_widgets.append(widget)
 
@@ -1908,6 +1929,7 @@ class MainWindow(QMainWindow):
                     return
                 self._syncing_x_range = True
                 try:
+                    # Sync time-series plots
                     for plot_widget in all_plot_widgets:
                         if plot_widget != source_widget:
                             # Check if the widget and its ViewBox still exist
@@ -1918,6 +1940,9 @@ class MainWindow(QMainWindow):
                             except (RuntimeError, AttributeError):
                                 # Widget has been deleted, skip it
                                 pass
+
+                    # Update XY plots with the new time range filter
+                    self._update_xy_plots_time_range(x_range[0], x_range[1])
                 finally:
                     self._syncing_x_range = False
             return sync_x_range
@@ -1932,6 +1957,20 @@ class MainWindow(QMainWindow):
                 pass  # No connections to disconnect
             # Connect new sync handler
             viewbox.sigXRangeChanged.connect(create_x_range_sync(plot_widget))
+
+    def _update_xy_plots_time_range(self, t_min: float, t_max: float):
+        """Update all XY plots with the current time range filter.
+
+        Args:
+            t_min: Minimum time value (from time-series X-axis)
+            t_max: Maximum time value (from time-series X-axis)
+        """
+        for i in range(self.tab_widget.count()):
+            widget = self.tab_widget.widget(i)
+            if isinstance(widget, PlotContainer):
+                for plot in widget.get_all_plot_widgets():
+                    if isinstance(plot, XYPlotWidget):
+                        plot.set_time_range(t_min, t_max)
 
     def _setup_cursor_sync_for_container(self, container: PlotContainer):
         """

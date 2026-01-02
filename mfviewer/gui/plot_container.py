@@ -353,13 +353,23 @@ class PlotContainer(QWidget):
         """
         plots_config = []
         for plot in self.plot_widgets:
-            plot_config = {
-                'channels': plot.get_channel_names()
-            }
-            # Include Y-axis range if available (convert to native float for JSON)
-            y_range = plot.get_y_range()
-            if y_range:
-                plot_config['y_range'] = [float(y_range[0]), float(y_range[1])]
+            if isinstance(plot, XYPlotWidget):
+                # X-Y scatter plot
+                plot_config = {
+                    'type': 'xy',
+                    'x_channel': plot.x_channel,
+                    'y_channel': plot.y_channel
+                }
+            else:
+                # Time-series plot
+                plot_config = {
+                    'type': 'time_series',
+                    'channels': plot.get_channel_names()
+                }
+                # Include Y-axis range if available (convert to native float for JSON)
+                y_range = plot.get_y_range()
+                if y_range:
+                    plot_config['y_range'] = [float(y_range[0]), float(y_range[1])]
             plots_config.append(plot_config)
 
         return {
@@ -394,28 +404,47 @@ class PlotContainer(QWidget):
             self._add_plot()
         else:
             for plot_config in plots_config:
-                self._add_plot()
-                plot_widget = self.plot_widgets[-1]
+                plot_type = plot_config.get('type', 'time_series')
 
-                # Add channels from all active logs
-                channels_to_add = plot_config.get('channels', [])
-                for channel_name in channels_to_add:
-                    if self.log_manager:
-                        plot_widget.add_channel_from_all_logs(channel_name, self.log_manager)
-                    else:
-                        # Fallback to single telemetry (defer auto-scale for batch loading)
-                        channel = telemetry.get_channel(channel_name)
-                        if channel:
-                            plot_widget.add_channel(channel, telemetry, defer_auto_scale=True)
+                if plot_type == 'xy':
+                    # Create X-Y scatter plot
+                    self._add_xy_plot()
+                    xy_widget = self.plot_widgets[-1]
+                    # _add_xy_plot already sets telemetry, but ensure it's set
+                    if not xy_widget.telemetry:
+                        xy_widget.set_telemetry(telemetry)
 
-                # Single auto-scale after all channels added (for fallback path)
-                if channels_to_add and not self.log_manager:
-                    plot_widget._auto_scale()
+                    # Set X and Y channels
+                    x_channel = plot_config.get('x_channel')
+                    y_channel = plot_config.get('y_channel')
+                    if x_channel and xy_widget.x_combo.findText(x_channel) >= 0:
+                        xy_widget.x_combo.setCurrentText(x_channel)
+                    if y_channel and xy_widget.y_combo.findText(y_channel) >= 0:
+                        xy_widget.y_combo.setCurrentText(y_channel)
+                else:
+                    # Create time-series plot
+                    self._add_plot()
+                    plot_widget = self.plot_widgets[-1]
 
-                # Restore Y-axis range if saved
-                y_range = plot_config.get('y_range')
-                if y_range and len(y_range) >= 2:
-                    plot_widget.set_y_range(y_range[0], y_range[1])
+                    # Add channels from all active logs
+                    channels_to_add = plot_config.get('channels', [])
+                    for channel_name in channels_to_add:
+                        if self.log_manager:
+                            plot_widget.add_channel_from_all_logs(channel_name, self.log_manager)
+                        else:
+                            # Fallback to single telemetry (defer auto-scale for batch loading)
+                            channel = telemetry.get_channel(channel_name)
+                            if channel:
+                                plot_widget.add_channel(channel, telemetry, defer_auto_scale=True)
+
+                    # Single auto-scale after all channels added (for fallback path)
+                    if channels_to_add and not self.log_manager:
+                        plot_widget._auto_scale()
+
+                    # Restore Y-axis range if saved
+                    y_range = plot_config.get('y_range')
+                    if y_range and len(y_range) >= 2:
+                        plot_widget.set_y_range(y_range[0], y_range[1])
 
         # Synchronize X-axes after loading configuration
         if self.sync_callback:

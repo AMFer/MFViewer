@@ -70,10 +70,14 @@ A Python-based desktop application for viewing and analyzing telemetry log files
   - Drag channels from the channel list directly onto X and Y dropdown selectors
   - Drop channels anywhere on the plot area to auto-fill X first, then Y
   - Semi-transparent blue scatter points for easy pattern recognition
+- **Time Range Filtering**: X-Y plots automatically sync with the visible time range of time-series plots
+  - Zoom/pan on time plots to filter X-Y scatter to show only points in that time window
+  - Helps correlate specific events between time-series and parameter relationships
 - **Context Menu Options**:
   - Convert back to time-series plot at any time
   - Auto Scale, Clear Plot, Remove Plot options
 - **Unit Support**: Axis labels show channel names with their display units
+- **Configuration Persistence**: X-Y plot settings saved and restored with tab configurations
 
 ### Core Features
 - **Haltech ECU Data Support**: Native support for Haltech ECU log files with automatic unit conversions
@@ -83,6 +87,7 @@ A Python-based desktop application for viewing and analyzing telemetry log files
   - Auto-scale with outlier exclusion
   - Percentage channels automatically scale to 0-100%
 - **Multi-Tab Interface**: Create multiple plot tabs to organize different channel groups
+  - Drag tabs to reorder them
   - Tab close only via context menu (prevents accidental closure)
   - Horizontal and vertical plot tiling within tabs
 - **Session Persistence**: Automatically saves and restores your last workspace on startup
@@ -118,7 +123,7 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 
 ### For End Users (Windows)
 
-1. Download the latest installer: `MFViewer-Setup-0.5.4.exe`
+1. Download the latest installer: `MFViewer-Setup-0.5.5.exe`
 2. Run the installer and follow the prompts
 3. Launch MFViewer from the Start Menu or Desktop shortcut
 
