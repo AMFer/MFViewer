@@ -2,10 +2,11 @@
 VE Map Calculator Dialog for calculating fuel VE corrections from telemetry data.
 
 This dialog allows users to:
-- Load a base VE map from CSV
+- Load a base VE map from CSV or paste from clipboard
 - Analyze telemetry log data to calculate VE corrections
 - Visualize cell usage (hit count) and lambda errors
 - Save corrected VE maps
+- Configure target AFR/Lambda tables
 """
 
 import json
@@ -20,10 +21,11 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QFileDialog, QMessageBox,
     QWidget, QSpinBox, QRadioButton, QButtonGroup,
-    QProgressDialog, QAbstractItemView, QStyledItemDelegate, QStyle
+    QProgressDialog, QAbstractItemView, QStyledItemDelegate, QStyle,
+    QTabWidget, QCheckBox, QApplication, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QColor, QBrush, QPalette
+from PyQt6.QtGui import QColor, QBrush, QPalette, QShortcut, QKeySequence
 
 
 class ColoredCellDelegate(QStyledItemDelegate):
@@ -66,6 +68,7 @@ from mfviewer.utils.units import UnitsManager
 from mfviewer.utils.config import TabConfiguration
 from mfviewer.data.ve_map_manager import VEMapManager, find_bin_index
 from mfviewer.data.log_manager import LogFileManager
+from mfviewer.data.engine_model import EngineConfig, AlphaNModel, EngineConfigManager
 
 
 class VEMapDialog(QDialog):
@@ -92,14 +95,32 @@ class VEMapDialog(QDialog):
         # Current view mode
         self.view_mode: str = "correction"  # "hit_count", "error", "correction"
 
+        # Engine model for extrapolation
+        self.engine_config: Optional[EngineConfig] = None
+        self.ve_model: Optional[AlphaNModel] = None
+        self.extrapolated_mask: Optional[np.ndarray] = None  # True = extrapolated cell
+
+        # Target AFR/Lambda table
+        self.target_afr_map: Optional[np.ndarray] = None
+        self.target_rpm_axis: List[float] = []
+        self.target_load_axis: List[float] = []
+
+        # Persistent directories and paths for load/save
+        self._last_load_dir: Optional[Path] = None
+        self._last_save_dir: Optional[Path] = None
+        self._last_ve_map_path: Optional[Path] = None  # Last loaded VE map file
+
         # Channel names discovered from logs
         self.available_channels: List[str] = []
         self._discover_channels()
 
         self.setWindowTitle("Fuel VE Map Calculator")
-        self.setMinimumWidth(1400)
-        self.setMinimumHeight(800)
-        self.resize(1600, 900)
+        self.setMinimumWidth(1600)
+        self.setMinimumHeight(1050)
+        self.resize(1800, 1150)
+
+        # Make non-modal so user can interact with main window
+        self.setWindowModality(Qt.WindowModality.NonModal)
 
         self._setup_ui()
         self._apply_dark_theme()
@@ -120,6 +141,25 @@ class VEMapDialog(QDialog):
                 with open(settings_file, 'r') as f:
                     settings = json.load(f)
                 self.min_samples_spin.setValue(settings.get('min_samples', 10))
+                self.bins_only_checkbox.setChecked(settings.get('bins_only', False))
+
+                # Load persistent directories
+                if settings.get('last_load_dir'):
+                    self._last_load_dir = Path(settings['last_load_dir'])
+                    if not self._last_load_dir.exists():
+                        self._last_load_dir = None
+                if settings.get('last_save_dir'):
+                    self._last_save_dir = Path(settings['last_save_dir'])
+                    if not self._last_save_dir.exists():
+                        self._last_save_dir = None
+
+                # Load last VE map path
+                if settings.get('last_ve_map_path'):
+                    self._last_ve_map_path = Path(settings['last_ve_map_path'])
+                    if not self._last_ve_map_path.exists():
+                        self._last_ve_map_path = None
+
+                # Load last engine config (handled separately in _load_engine_configs)
             except (json.JSONDecodeError, IOError):
                 pass  # Use defaults if file is corrupted
 
@@ -128,8 +168,21 @@ class VEMapDialog(QDialog):
         settings_file = self._get_settings_file()
         settings_file.parent.mkdir(parents=True, exist_ok=True)
         settings = {
-            'min_samples': self.min_samples_spin.value()
+            'min_samples': self.min_samples_spin.value(),
+            'bins_only': self.bins_only_checkbox.isChecked(),
         }
+        # Save persistent directories
+        if self._last_load_dir:
+            settings['last_load_dir'] = str(self._last_load_dir)
+        if self._last_save_dir:
+            settings['last_save_dir'] = str(self._last_save_dir)
+        # Save last VE map path
+        if self._last_ve_map_path:
+            settings['last_ve_map_path'] = str(self._last_ve_map_path)
+        # Save last engine config
+        current_engine = self.engine_combo.currentText()
+        if current_engine and current_engine != "-- Select Engine --":
+            settings['last_engine_config'] = current_engine
         try:
             with open(settings_file, 'w') as f:
                 json.dump(settings, f, indent=2)
@@ -158,6 +211,17 @@ class VEMapDialog(QDialog):
         self.save_map_btn.setEnabled(False)
         toolbar_layout.addWidget(self.save_map_btn)
 
+        self.copy_map_btn = QPushButton("Copy to Clipboard")
+        self.copy_map_btn.clicked.connect(self._copy_map_to_clipboard)
+        self.copy_map_btn.setEnabled(False)
+        self.copy_map_btn.setToolTip("Copy corrected VE values to clipboard (no row/column labels)")
+        toolbar_layout.addWidget(self.copy_map_btn)
+
+        self.paste_map_btn = QPushButton("Paste from Clipboard")
+        self.paste_map_btn.clicked.connect(self._paste_map_from_clipboard)
+        self.paste_map_btn.setToolTip("Paste VE map values from clipboard (with or without headers)")
+        toolbar_layout.addWidget(self.paste_map_btn)
+
         toolbar_layout.addSpacing(20)
 
         self.calculate_btn = QPushButton("Calculate Corrections")
@@ -177,14 +241,18 @@ class VEMapDialog(QDialog):
         content_layout = QHBoxLayout()
         content_layout.setSpacing(10)
 
-        # Left side - Map table (stretches to fill)
+        # Left side - Tab widget with map tables
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
-        map_label = QLabel("VE Map (Load % vs RPM):")
-        map_label.setStyleSheet("font-weight: bold;")
-        left_layout.addWidget(map_label)
+        # Tab widget for VE Map and Target AFR tables
+        self.table_tabs = QTabWidget()
+
+        # VE Map tab
+        ve_tab = QWidget()
+        ve_tab_layout = QVBoxLayout(ve_tab)
+        ve_tab_layout.setContentsMargins(4, 4, 4, 4)
 
         self.map_table = QTableWidget()
         self.map_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -193,12 +261,60 @@ class VEMapDialog(QDialog):
         self.map_table.cellDoubleClicked.connect(self._on_cell_double_clicked)
         # Use custom delegate to paint background colors (overrides stylesheet)
         self.map_table.setItemDelegate(ColoredCellDelegate(self.map_table))
-        left_layout.addWidget(self.map_table)
+        ve_tab_layout.addWidget(self.map_table)
 
-        # Cell info label
+        # Cell info label for VE table
         self.cell_info_label = QLabel("")
         self.cell_info_label.setStyleSheet("color: #cccccc; padding: 4px;")
-        left_layout.addWidget(self.cell_info_label)
+        ve_tab_layout.addWidget(self.cell_info_label)
+
+        self.table_tabs.addTab(ve_tab, "VE Map")
+
+        # Target AFR/Lambda tab
+        target_tab = QWidget()
+        target_tab_layout = QVBoxLayout(target_tab)
+        target_tab_layout.setContentsMargins(4, 4, 4, 4)
+
+        # Toolbar for target map
+        target_toolbar = QHBoxLayout()
+        self.load_target_btn = QPushButton("Load Target Map...")
+        self.load_target_btn.clicked.connect(self._load_target_map_dialog)
+        target_toolbar.addWidget(self.load_target_btn)
+
+        self.paste_target_btn = QPushButton("Paste from Clipboard")
+        self.paste_target_btn.clicked.connect(self._paste_target_from_clipboard)
+        target_toolbar.addWidget(self.paste_target_btn)
+
+        self.copy_target_btn = QPushButton("Copy to Clipboard")
+        self.copy_target_btn.clicked.connect(self._copy_target_to_clipboard)
+        self.copy_target_btn.setEnabled(False)
+        target_toolbar.addWidget(self.copy_target_btn)
+
+        target_toolbar.addStretch()
+
+        # Lambda/AFR selector for target display
+        target_toolbar.addWidget(QLabel("Display:"))
+        self.target_display_combo = QComboBox()
+        self.target_display_combo.addItems(["Lambda", "AFR (Gasoline)", "AFR (E85)"])
+        self.target_display_combo.currentTextChanged.connect(self._update_target_display)
+        target_toolbar.addWidget(self.target_display_combo)
+
+        target_tab_layout.addLayout(target_toolbar)
+
+        self.target_table = QTableWidget()
+        self.target_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.target_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        self.target_table.cellClicked.connect(self._on_target_cell_clicked)
+        target_tab_layout.addWidget(self.target_table)
+
+        # Cell info label for target table
+        self.target_cell_info_label = QLabel("Load a target AFR/Lambda map or paste from clipboard")
+        self.target_cell_info_label.setStyleSheet("color: #888888; padding: 4px; font-style: italic;")
+        target_tab_layout.addWidget(self.target_cell_info_label)
+
+        self.table_tabs.addTab(target_tab, "Target AFR/Lambda")
+
+        left_layout.addWidget(self.table_tabs)
 
         content_layout.addWidget(left_widget, 1)  # Stretch factor 1
 
@@ -256,6 +372,10 @@ class VEMapDialog(QDialog):
         self.view_mode_group.addButton(self.view_error_radio, 2)
         view_layout.addWidget(self.view_error_radio)
 
+        self.view_proposed_radio = QRadioButton("Proposed VE Values")
+        self.view_mode_group.addButton(self.view_proposed_radio, 3)
+        view_layout.addWidget(self.view_proposed_radio)
+
         self.view_mode_group.buttonClicked.connect(self._on_view_mode_changed)
 
         view_group.setLayout(view_layout)
@@ -263,14 +383,25 @@ class VEMapDialog(QDialog):
 
         # Settings
         settings_group = QGroupBox("Settings")
-        settings_layout = QHBoxLayout()
-        settings_layout.addWidget(QLabel("Min Samples:"))
+        settings_layout = QVBoxLayout()
+        settings_layout.setSpacing(4)
+
+        min_samples_row = QHBoxLayout()
+        min_samples_row.addWidget(QLabel("Min Samples:"))
         self.min_samples_spin = QSpinBox()
         self.min_samples_spin.setRange(1, 1000)
         self.min_samples_spin.setValue(10)
         self.min_samples_spin.setToolTip("Minimum samples required to calculate a correction for a cell")
         self.min_samples_spin.valueChanged.connect(self._save_settings)
-        settings_layout.addWidget(self.min_samples_spin)
+        min_samples_row.addWidget(self.min_samples_spin)
+        settings_layout.addLayout(min_samples_row)
+
+        self.bins_only_checkbox = QCheckBox("Bins only (no correction)")
+        self.bins_only_checkbox.setToolTip("Only determine which bins are hit, don't apply corrections")
+        self.bins_only_checkbox.stateChanged.connect(self._save_settings)
+        self.bins_only_checkbox.stateChanged.connect(self._on_bins_only_changed)
+        settings_layout.addWidget(self.bins_only_checkbox)
+
         settings_group.setLayout(settings_layout)
         right_layout.addWidget(settings_group)
 
@@ -308,6 +439,62 @@ class VEMapDialog(QDialog):
 
         legend_group.setLayout(legend_layout)
         right_layout.addWidget(legend_group)
+
+        # Model Fitting group
+        model_group = QGroupBox("Model Fitting")
+        model_layout = QVBoxLayout()
+        model_layout.setSpacing(4)
+
+        # Engine profile selector
+        engine_row = QHBoxLayout()
+        engine_row.addWidget(QLabel("Engine:"))
+        self.engine_combo = QComboBox()
+        self.engine_combo.setMinimumWidth(100)
+        self.engine_combo.currentTextChanged.connect(self._on_engine_selected)
+        engine_row.addWidget(self.engine_combo, 1)
+        model_layout.addLayout(engine_row)
+
+        # Configure button
+        self.config_engine_btn = QPushButton("Configure Engine...")
+        self.config_engine_btn.clicked.connect(self._open_engine_config)
+        model_layout.addWidget(self.config_engine_btn)
+
+        # Fit model button
+        self.fit_model_btn = QPushButton("Fit Model")
+        self.fit_model_btn.clicked.connect(self._fit_model)
+        self.fit_model_btn.setEnabled(False)
+        model_layout.addWidget(self.fit_model_btn)
+
+        # Fit statistics labels
+        self.fit_r2_label = QLabel("R\u00b2: -")
+        self.fit_r2_label.setStyleSheet("color: #aaaaaa;")
+        model_layout.addWidget(self.fit_r2_label)
+
+        self.fit_rmse_label = QLabel("RMSE: -")
+        self.fit_rmse_label.setStyleSheet("color: #aaaaaa;")
+        model_layout.addWidget(self.fit_rmse_label)
+
+        # Fill empty cells button
+        self.fill_cells_btn = QPushButton("Fill Empty Cells")
+        self.fill_cells_btn.clicked.connect(self._fill_empty_cells)
+        self.fill_cells_btn.setEnabled(False)
+        self.fill_cells_btn.setToolTip("Use fitted model to extrapolate empty cells")
+        model_layout.addWidget(self.fill_cells_btn)
+
+        # Cell counts
+        self.measured_cells_label = QLabel("Measured: -")
+        self.measured_cells_label.setStyleSheet("color: #aaaaaa;")
+        model_layout.addWidget(self.measured_cells_label)
+
+        self.extrapolated_cells_label = QLabel("Extrapolated: -")
+        self.extrapolated_cells_label.setStyleSheet("color: #6ab0de;")  # Light blue
+        model_layout.addWidget(self.extrapolated_cells_label)
+
+        model_group.setLayout(model_layout)
+        right_layout.addWidget(model_group)
+
+        # Populate engine combo
+        self._load_engine_configs()
 
         # Add stretch at bottom to push controls up
         right_layout.addStretch()
@@ -348,15 +535,25 @@ class VEMapDialog(QDialog):
                 combo.addItem(channel)
 
     def _load_default_map(self):
-        """Load the default base map."""
-        default_path = self.ve_map_manager.get_default_map_path()
-        if default_path.exists():
-            self._load_map(default_path)
+        """Load the default base map or last used map."""
+        # Try to load last used VE map first
+        if self._last_ve_map_path and self._last_ve_map_path.exists():
+            self._load_map(self._last_ve_map_path)
+        else:
+            # Fall back to default map
+            default_path = self.ve_map_manager.get_default_map_path()
+            if default_path.exists():
+                self._load_map(default_path)
 
     def _load_map_dialog(self):
         """Show file dialog to load a base map."""
-        config_dir = TabConfiguration.get_default_config_dir()
-        default_path = self.ve_map_manager.get_default_map_path().parent
+        # Use persistent directory if available, then last VE map's directory, then default
+        if self._last_load_dir and self._last_load_dir.exists():
+            default_path = self._last_load_dir
+        elif self._last_ve_map_path and self._last_ve_map_path.parent.exists():
+            default_path = self._last_ve_map_path.parent
+        else:
+            default_path = self.ve_map_manager.get_default_map_path().parent
 
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -366,6 +563,9 @@ class VEMapDialog(QDialog):
         )
 
         if file_path:
+            # Save the directory for next time
+            self._last_load_dir = Path(file_path).parent
+            self._save_settings()
             self._load_map(Path(file_path))
 
     def _load_map(self, file_path: Path):
@@ -373,6 +573,10 @@ class VEMapDialog(QDialog):
         try:
             self.base_ve_map, self.rpm_axis, self.load_axis, self.load_type = \
                 VEMapManager.load_map(file_path)
+
+            # Save the path for next time
+            self._last_ve_map_path = file_path
+            self._save_settings()
 
             # Reset correction data
             self.corrected_ve_map = None
@@ -420,10 +624,14 @@ class VEMapDialog(QDialog):
         # Set columns to stretch to fill available space
         header = self.map_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # Connect double-click for editing column headers
+        header.sectionDoubleClicked.connect(self._edit_column_header)
 
         # Set rows to have consistent height
         vert_header = self.map_table.verticalHeader()
         vert_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # Connect double-click for editing row headers
+        vert_header.sectionDoubleClicked.connect(self._edit_row_header)
 
     def _update_map_display(self):
         """Update the map table display based on current view mode."""
@@ -443,8 +651,10 @@ class VEMapDialog(QDialog):
                     text, color = self._get_correction_display(row, col, base_ve)
                 elif self.view_mode == "hit_count":
                     text, color = self._get_hit_count_display(row, col, base_ve)
-                else:  # error
+                elif self.view_mode == "error":
                     text, color = self._get_error_display(row, col, base_ve)
+                else:  # proposed
+                    text, color = self._get_proposed_display(row, col, base_ve)
 
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -469,6 +679,14 @@ class VEMapDialog(QDialog):
 
     def _get_correction_display(self, row: int, col: int, base_ve: float) -> Tuple[str, QColor]:
         """Get display text and color for correction view."""
+        # Check if this is an extrapolated cell
+        is_extrapolated = (self.extrapolated_mask is not None and
+                          self.extrapolated_mask[row, col])
+
+        # Check if bins-only mode is active
+        bins_only = self.bins_only_checkbox.isChecked()
+        min_samples = self.min_samples_spin.value()
+
         if self.corrected_ve_map is not None:
             new_ve = self.corrected_ve_map[row, col]
             correction = self.correction_map[row, col] if self.correction_map is not None else 1.0
@@ -476,7 +694,26 @@ class VEMapDialog(QDialog):
             if correction != 1.0:
                 change_pct = (correction - 1.0) * 100
                 text = f"{base_ve:.1f}→{new_ve:.1f}"
-                color = self._get_correction_color(change_pct)
+
+                if is_extrapolated:
+                    # Blue tint for extrapolated cells
+                    color = self._get_extrapolated_color(change_pct)
+                else:
+                    color = self._get_correction_color(change_pct)
+            elif bins_only and self.hit_count_map is not None:
+                # In bins-only mode, highlight cells that have data
+                hit_count = self.hit_count_map[row, col]
+                if hit_count >= min_samples:
+                    # Cell has sufficient data - highlight with cyan/teal
+                    text = f"{base_ve:.1f}"
+                    color = QColor(50, 120, 120)  # Teal - measured but no correction applied
+                elif hit_count > 0:
+                    # Cell has some data but not enough - dim highlight
+                    text = f"{base_ve:.1f}"
+                    color = QColor(50, 80, 80)  # Darker teal - insufficient samples
+                else:
+                    text = f"{base_ve:.1f}"
+                    color = QColor(60, 60, 70)
             else:
                 text = f"{base_ve:.1f}"
                 color = QColor(60, 60, 70)
@@ -535,6 +772,27 @@ class VEMapDialog(QDialog):
             else:
                 return QColor(90, 200, 90)  # Large decrease - bright green
 
+    def _get_extrapolated_color(self, change_pct: float) -> QColor:
+        """Get color for extrapolated cells. Blue-tinted versions of correction colors."""
+        # Blue-tinted colors to distinguish extrapolated from measured
+        if abs(change_pct) < 1.0:
+            return QColor(50, 60, 80)  # Minor change - blue-gray
+        elif abs(change_pct) < 3.0:
+            if change_pct > 0:
+                return QColor(100, 80, 130)  # Small increase - purple-blue
+            else:
+                return QColor(60, 100, 130)  # Small decrease - teal-blue
+        elif abs(change_pct) < 7.0:
+            if change_pct > 0:
+                return QColor(120, 90, 160)  # Medium increase - purple
+            else:
+                return QColor(70, 120, 160)  # Medium decrease - cyan-blue
+        else:
+            if change_pct > 0:
+                return QColor(140, 100, 180)  # Large increase - bright purple
+            else:
+                return QColor(80, 140, 180)  # Large decrease - bright cyan
+
     def _get_hit_count_color(self, count: int, max_count: int) -> QColor:
         """Get color for hit count."""
         if count == 0:
@@ -575,16 +833,51 @@ class VEMapDialog(QDialog):
             else:
                 return QColor(70, 100, 230)  # Blue - rich
 
+    def _get_proposed_display(self, row: int, col: int, base_ve: float) -> Tuple[str, QColor]:
+        """Get display text and color for proposed VE values view."""
+        # Check if this is an extrapolated cell
+        is_extrapolated = (self.extrapolated_mask is not None and
+                          self.extrapolated_mask[row, col])
+
+        if self.corrected_ve_map is not None:
+            new_ve = self.corrected_ve_map[row, col]
+            text = f"{new_ve:.1f}"
+
+            # Color based on whether value changed and if extrapolated
+            if is_extrapolated:
+                color = QColor(70, 100, 150)  # Blue for extrapolated
+            elif abs(new_ve - base_ve) > 0.1:
+                color = QColor(80, 130, 80)  # Green for measured correction
+            else:
+                color = QColor(60, 60, 70)  # Gray for unchanged
+        else:
+            text = f"{base_ve:.1f}"
+            color = QColor(60, 60, 70)
+
+        return text, color
+
     def _update_legend(self):
         """Update the color legend based on current view mode."""
+        bins_only = self.bins_only_checkbox.isChecked()
+
         if self.view_mode == "correction":
-            legends = [
-                ("No change", QColor(60, 60, 60)),
-                ("+1-3% (add fuel)", QColor(140, 70, 70)),
-                ("+3-7% (add fuel)", QColor(220, 90, 90)),
-                ("-1-3% (less fuel)", QColor(70, 120, 70)),
-                ("-3-7% (less fuel)", QColor(90, 200, 90)),
-            ]
+            if bins_only:
+                # Show bins-only legend
+                legends = [
+                    ("No data", QColor(60, 60, 70)),
+                    ("Insufficient samples", QColor(50, 80, 80)),
+                    ("Measured (bins only)", QColor(50, 120, 120)),
+                    ("", QColor(30, 30, 30)),  # Empty placeholder
+                    ("", QColor(30, 30, 30)),  # Empty placeholder
+                ]
+            else:
+                legends = [
+                    ("No change", QColor(60, 60, 60)),
+                    ("+1-3% (add fuel)", QColor(140, 70, 70)),
+                    ("+3-7% (add fuel)", QColor(220, 90, 90)),
+                    ("-1-3% (less fuel)", QColor(70, 120, 70)),
+                    ("-3-7% (less fuel)", QColor(90, 200, 90)),
+                ]
         elif self.view_mode == "hit_count":
             legends = [
                 ("No samples", QColor(40, 40, 50)),
@@ -593,13 +886,21 @@ class VEMapDialog(QDialog):
                 ("Many samples", QColor(180, 230, 70)),
                 ("Most samples", QColor(255, 180, 50)),
             ]
-        else:  # error
+        elif self.view_mode == "error":
             legends = [
                 ("On target (<2%)", QColor(60, 180, 80)),
                 ("Slight error (2-5%)", QColor(200, 200, 60)),
                 ("Moderate error (5-10%)", QColor(230, 150, 50)),
                 ("Large lean (>10%)", QColor(230, 70, 70)),
                 ("Large rich (>10%)", QColor(70, 100, 230)),
+            ]
+        else:  # proposed
+            legends = [
+                ("Unchanged", QColor(60, 60, 70)),
+                ("Measured correction", QColor(80, 130, 80)),
+                ("Extrapolated", QColor(70, 100, 150)),
+                ("", QColor(30, 30, 30)),  # Empty placeholder
+                ("", QColor(30, 30, 30)),  # Empty placeholder
             ]
 
         for i, (text, color) in enumerate(legends):
@@ -619,11 +920,20 @@ class VEMapDialog(QDialog):
             self.view_mode = "correction"
         elif button_id == 1:
             self.view_mode = "hit_count"
-        else:
+        elif button_id == 2:
             self.view_mode = "error"
+        else:
+            self.view_mode = "proposed"
 
         self._update_map_display()
         self._update_legend()
+
+    def _on_bins_only_changed(self, state: int):
+        """Handle bins-only checkbox toggle."""
+        # Update display and legend to reflect the new mode
+        if self.base_ve_map is not None:
+            self._update_map_display()
+            self._update_legend()
 
     def _on_cell_clicked(self, row: int, col: int):
         """Handle cell click to show detailed info."""
@@ -666,6 +976,60 @@ class VEMapDialog(QDialog):
 
         # Update cell info to reflect the change
         self._on_cell_clicked(row, col)
+
+    def _edit_column_header(self, col: int):
+        """Edit column header (RPM value) via double-click."""
+        if not self.rpm_axis or col >= len(self.rpm_axis):
+            return
+
+        current_value = self.rpm_axis[col]
+
+        value, ok = QInputDialog.getDouble(
+            self,
+            "Edit RPM Value",
+            f"Enter new RPM value for column {col + 1}:",
+            current_value,
+            0,  # min
+            20000,  # max
+            0  # decimals
+        )
+
+        if ok:
+            # Update the axis value
+            self.rpm_axis[col] = value
+            # Update table header
+            self.map_table.setHorizontalHeaderItem(
+                col, QTableWidgetItem(str(int(value)))
+            )
+            self.status_label.setText(f"Updated RPM column {col + 1} to {int(value)}")
+            self.status_label.setStyleSheet("color: #4ec9b0;")
+
+    def _edit_row_header(self, row: int):
+        """Edit row header (Load/TPS value) via double-click."""
+        if not self.load_axis or row >= len(self.load_axis):
+            return
+
+        current_value = self.load_axis[row]
+
+        value, ok = QInputDialog.getDouble(
+            self,
+            "Edit Load Value",
+            f"Enter new Load/TPS value for row {row + 1}:",
+            current_value,
+            0,  # min
+            120,  # max
+            1  # decimals
+        )
+
+        if ok:
+            # Update the axis value
+            self.load_axis[row] = value
+            # Update table header
+            self.map_table.setVerticalHeaderItem(
+                row, QTableWidgetItem(f"{value:.0f}%")
+            )
+            self.status_label.setText(f"Updated Load row {row + 1} to {value:.0f}%")
+            self.status_label.setStyleSheet("color: #4ec9b0;")
 
     def _calculate_corrections(self):
         """Calculate VE corrections from telemetry data."""
@@ -736,6 +1100,10 @@ class VEMapDialog(QDialog):
             self.status_label.setText("Corrections calculated")
             self.status_label.setStyleSheet("color: #4ec9b0;")
             self.save_map_btn.setEnabled(True)
+            self.copy_map_btn.setEnabled(True)
+
+            # Update model fitting UI (enables Fit button if engine is selected)
+            self._update_model_ui()
 
         except Exception as e:
             progress.close()
@@ -854,8 +1222,9 @@ class VEMapDialog(QDialog):
                 col_idx = find_bin_index(rpm, self.rpm_axis)
 
                 # Calculate correction ratio using Lambda formula
-                # target / actual: if we're lean (actual > target), ratio < 1, need more fuel
-                correction_ratio = target_lambda / actual_lambda
+                # actual / target: if we're lean (actual > target), ratio > 1, need more fuel (higher VE)
+                # if we're rich (actual < target), ratio < 1, need less fuel (lower VE)
+                correction_ratio = actual_lambda / target_lambda
                 binned_data[(row_idx, col_idx)].append(correction_ratio)
 
         return binned_data
@@ -865,6 +1234,9 @@ class VEMapDialog(QDialog):
         """Compute correction maps from binned data."""
         rows = len(self.load_axis)
         cols = len(self.rpm_axis)
+
+        # Check if bins-only mode is enabled
+        bins_only = self.bins_only_checkbox.isChecked()
 
         # Initialize maps
         self.hit_count_map = np.zeros((rows, cols), dtype=np.int32)
@@ -887,10 +1259,11 @@ class VEMapDialog(QDialog):
                 # Negative = running rich, needs less fuel
                 self.error_map[row_idx, col_idx] = (avg_correction - 1.0) * 100
 
-                # Apply correction to base VE
-                self.correction_map[row_idx, col_idx] = avg_correction
-                self.corrected_ve_map[row_idx, col_idx] = \
-                    self.base_ve_map[row_idx, col_idx] * avg_correction
+                # Only apply correction if not in bins-only mode
+                if not bins_only:
+                    self.correction_map[row_idx, col_idx] = avg_correction
+                    self.corrected_ve_map[row_idx, col_idx] = \
+                        self.base_ve_map[row_idx, col_idx] * avg_correction
 
     def _update_statistics(self):
         """Update statistics display."""
@@ -931,17 +1304,27 @@ class VEMapDialog(QDialog):
             QMessageBox.warning(self, "No Data", "No corrected map to save. Calculate corrections first.")
             return
 
-        config_dir = TabConfiguration.get_default_config_dir()
+        # Use persistent directory if available, then last VE map's directory, then default
+        if self._last_save_dir and self._last_save_dir.exists():
+            default_path = self._last_save_dir / "corrected_fuel_ve_map.csv"
+        elif self._last_ve_map_path and self._last_ve_map_path.parent.exists():
+            default_path = self._last_ve_map_path.parent / "corrected_fuel_ve_map.csv"
+        else:
+            default_path = TabConfiguration.get_default_config_dir() / "corrected_fuel_ve_map.csv"
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Corrected VE Map",
-            str(config_dir / "corrected_fuel_ve_map.csv"),
+            str(default_path),
             "CSV Files (*.csv);;All Files (*.*)"
         )
 
         if not file_path:
             return
+
+        # Save the directory for next time
+        self._last_save_dir = Path(file_path).parent
+        self._save_settings()
 
         # Ensure .csv extension
         if not file_path.endswith('.csv'):
@@ -968,6 +1351,837 @@ class VEMapDialog(QDialog):
                 "Save Error",
                 "Failed to save the corrected map."
             )
+
+    def _copy_map_to_clipboard(self):
+        """Copy the corrected VE map values to clipboard (no row/column labels)."""
+        if self.corrected_ve_map is None:
+            return
+
+        # Build tab-separated values string (no headers)
+        lines = []
+        rows, cols = self.corrected_ve_map.shape
+        for row in range(rows):
+            row_values = [f"{self.corrected_ve_map[row, col]:.1f}" for col in range(cols)]
+            lines.append("\t".join(row_values))
+
+        clipboard_text = "\n".join(lines)
+
+        # Copy to clipboard
+        from PyQt6.QtWidgets import QApplication
+        clipboard = QApplication.clipboard()
+        clipboard.setText(clipboard_text)
+
+        self.status_label.setText("Copied to clipboard")
+        self.status_label.setStyleSheet("color: #4ec9b0;")
+
+    def _paste_map_from_clipboard(self):
+        """Paste VE map from clipboard with automatic header detection."""
+        clipboard = QApplication.clipboard()
+        text = clipboard.text()
+
+        if not text.strip():
+            QMessageBox.warning(self, "Empty Clipboard", "No data found in clipboard.")
+            return
+
+        try:
+            # Parse clipboard text (supports tab or comma separated)
+            lines = text.strip().split('\n')
+            rows_data = []
+
+            for line in lines:
+                # Try tab first, then comma
+                if '\t' in line:
+                    cells = line.split('\t')
+                else:
+                    cells = line.split(',')
+                # Strip whitespace from each cell
+                cells = [c.strip() for c in cells]
+                if cells:  # Skip empty lines
+                    rows_data.append(cells)
+
+            if not rows_data:
+                QMessageBox.warning(self, "Parse Error", "Could not parse clipboard data.")
+                return
+
+            # Detect if first row contains RPM headers (numbers, generally increasing)
+            has_rpm_header = self._detect_rpm_header(rows_data[0])
+
+            # Detect if first column contains load headers (numbers in first column)
+            has_load_header = self._detect_load_header(rows_data, has_rpm_header)
+
+            # Extract axes and data based on detection
+            if has_rpm_header and has_load_header:
+                # Full headers: first row is RPM, first column is load
+                # First cell might be a label like "TPS" or empty
+                rpm_axis = self._parse_numeric_row(rows_data[0][1:])
+                load_axis = []
+                ve_data = []
+                for row in rows_data[1:]:
+                    if row:
+                        load_axis.append(self._parse_numeric_value(row[0]))
+                        ve_data.append(self._parse_numeric_row(row[1:]))
+            elif has_rpm_header:
+                # Only RPM header, no load header
+                rpm_axis = self._parse_numeric_row(rows_data[0])
+                load_axis = self._generate_default_load_axis(len(rows_data) - 1)
+                ve_data = [self._parse_numeric_row(row) for row in rows_data[1:]]
+            elif has_load_header:
+                # Only load header, no RPM header
+                load_axis = []
+                ve_data = []
+                for row in rows_data:
+                    if row:
+                        load_axis.append(self._parse_numeric_value(row[0]))
+                        ve_data.append(self._parse_numeric_row(row[1:]))
+                rpm_axis = self._generate_default_rpm_axis(len(ve_data[0]) if ve_data else 0)
+            else:
+                # No headers - just data values
+                rpm_axis = self._generate_default_rpm_axis(len(rows_data[0]) if rows_data else 0)
+                load_axis = self._generate_default_load_axis(len(rows_data))
+                ve_data = [self._parse_numeric_row(row) for row in rows_data]
+
+            # Validate dimensions
+            if not ve_data or not ve_data[0]:
+                QMessageBox.warning(self, "Parse Error", "No valid data found in clipboard.")
+                return
+
+            n_rows = len(ve_data)
+            n_cols = len(ve_data[0])
+
+            # Ensure all rows have same number of columns
+            for i, row in enumerate(ve_data):
+                if len(row) != n_cols:
+                    QMessageBox.warning(
+                        self, "Parse Error",
+                        f"Row {i+1} has {len(row)} columns, expected {n_cols}."
+                    )
+                    return
+
+            # Validate axis lengths
+            if len(rpm_axis) != n_cols:
+                rpm_axis = self._generate_default_rpm_axis(n_cols)
+            if len(load_axis) != n_rows:
+                load_axis = self._generate_default_load_axis(n_rows)
+
+            # Convert to numpy array
+            self.base_ve_map = np.array(ve_data, dtype=np.float64)
+            self.rpm_axis = rpm_axis
+            self.load_axis = load_axis
+            self.load_type = "TPS"  # Default
+
+            # Reset correction data
+            self.corrected_ve_map = None
+            self.hit_count_map = None
+            self.error_map = None
+            self.correction_map = None
+            self.extrapolated_mask = None
+
+            # Update UI
+            self._setup_map_table()
+            self._update_map_display()
+            self._update_statistics()
+
+            header_info = []
+            if has_rpm_header:
+                header_info.append("RPM headers")
+            if has_load_header:
+                header_info.append("Load headers")
+
+            status_msg = f"Pasted {n_rows}x{n_cols} map"
+            if header_info:
+                status_msg += f" (detected: {', '.join(header_info)})"
+
+            self.status_label.setText(status_msg)
+            self.status_label.setStyleSheet("color: #4ec9b0;")
+            self.calculate_btn.setEnabled(self.log_manager.get_main_log() is not None)
+            self.save_map_btn.setEnabled(False)
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Paste Error",
+                f"Failed to parse clipboard data:\n{e}"
+            )
+
+    def _detect_rpm_header(self, first_row: List[str]) -> bool:
+        """Detect if the first row contains RPM values (numeric, generally increasing)."""
+        if not first_row:
+            return False
+
+        # Skip first cell if it might be a label (non-numeric or contains text)
+        start_idx = 0
+        if first_row[0] and not self._is_numeric(first_row[0]):
+            start_idx = 1
+
+        if len(first_row) - start_idx < 3:
+            return False
+
+        # Check if values are numeric and generally increasing
+        values = []
+        for cell in first_row[start_idx:]:
+            if self._is_numeric(cell):
+                values.append(self._parse_numeric_value(cell))
+            else:
+                return False
+
+        # RPM values should be increasing and typically > 100
+        if len(values) < 3:
+            return False
+
+        # Check if mostly increasing and values look like RPM (> 100)
+        increasing_count = sum(1 for i in range(len(values)-1) if values[i+1] > values[i])
+        return increasing_count >= len(values) * 0.6 and max(values) > 100
+
+    def _detect_load_header(self, rows_data: List[List[str]], has_rpm_header: bool) -> bool:
+        """Detect if the first column contains load values."""
+        if not rows_data:
+            return False
+
+        # Start from row 1 if we have RPM header, else row 0
+        start_row = 1 if has_rpm_header else 0
+        if len(rows_data) - start_row < 3:
+            return False
+
+        # Check if first column values are numeric
+        values = []
+        for row in rows_data[start_row:]:
+            if row and self._is_numeric(row[0]):
+                values.append(self._parse_numeric_value(row[0]))
+            else:
+                return False
+
+        # Load values (TPS) are typically 0-100, often decreasing from top to bottom
+        if len(values) < 3:
+            return False
+
+        # Check if values look like load percentages (0-120 range typical)
+        return all(0 <= v <= 120 for v in values)
+
+    def _is_numeric(self, value: str) -> bool:
+        """Check if a string value is numeric."""
+        if not value:
+            return False
+        try:
+            # Remove common suffixes like % or units
+            clean_val = value.rstrip('%').strip()
+            float(clean_val)
+            return True
+        except ValueError:
+            return False
+
+    def _parse_numeric_value(self, value: str) -> float:
+        """Parse a numeric value from string, handling % suffix."""
+        clean_val = value.rstrip('%').strip()
+        return float(clean_val)
+
+    def _parse_numeric_row(self, row: List[str]) -> List[float]:
+        """Parse a row of numeric values."""
+        result = []
+        for cell in row:
+            if self._is_numeric(cell):
+                result.append(self._parse_numeric_value(cell))
+            else:
+                result.append(0.0)  # Default for invalid values
+        return result
+
+    def _generate_default_rpm_axis(self, n_cols: int) -> List[float]:
+        """Generate a default RPM axis if not provided in paste."""
+        if n_cols <= 0:
+            return []
+        # Common RPM axis: 500 to 8000 in reasonable steps
+        step = max(500, (8000 - 500) // max(1, n_cols - 1))
+        return [500.0 + i * step for i in range(n_cols)]
+
+    def _generate_default_load_axis(self, n_rows: int) -> List[float]:
+        """Generate a default load axis if not provided in paste."""
+        if n_rows <= 0:
+            return []
+        # Common load axis: 100 down to 0 in reasonable steps
+        step = 100.0 / max(1, n_rows - 1) if n_rows > 1 else 100.0
+        return [100.0 - i * step for i in range(n_rows)]
+
+    # ========== Target AFR/Lambda Table Methods ==========
+
+    def _load_target_map_dialog(self):
+        """Show file dialog to load a target AFR/Lambda map."""
+        # Use same directory as VE map load, then last VE map's directory, then default
+        if self._last_load_dir and self._last_load_dir.exists():
+            default_path = self._last_load_dir
+        elif self._last_ve_map_path and self._last_ve_map_path.parent.exists():
+            default_path = self._last_ve_map_path.parent
+        else:
+            default_path = self.ve_map_manager.get_default_map_path().parent
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Target AFR/Lambda Map",
+            str(default_path),
+            "CSV Files (*.csv);;All Files (*.*)"
+        )
+
+        if file_path:
+            self._last_load_dir = Path(file_path).parent
+            self._save_settings()
+            self._load_target_map(Path(file_path))
+
+    def _load_target_map(self, file_path: Path):
+        """Load a target AFR/Lambda map from file."""
+        try:
+            # Use same loader as VE map
+            target_map, rpm_axis, load_axis, _ = VEMapManager.load_map(file_path)
+
+            self.target_afr_map = target_map
+            self.target_rpm_axis = rpm_axis
+            self.target_load_axis = load_axis
+
+            # Update table display
+            self._setup_target_table()
+            self._update_target_display()
+
+            self.target_cell_info_label.setText(f"Loaded: {file_path.name}")
+            self.target_cell_info_label.setStyleSheet("color: #4ec9b0; padding: 4px;")
+            self.copy_target_btn.setEnabled(True)
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Load Error",
+                f"Failed to load target map:\n{e}"
+            )
+
+    def _paste_target_from_clipboard(self):
+        """Paste target AFR/Lambda map from clipboard."""
+        clipboard = QApplication.clipboard()
+        text = clipboard.text()
+
+        if not text.strip():
+            QMessageBox.warning(self, "Empty Clipboard", "No data found in clipboard.")
+            return
+
+        try:
+            # Parse clipboard text (reuse VE map parsing)
+            lines = text.strip().split('\n')
+            rows_data = []
+
+            for line in lines:
+                if '\t' in line:
+                    cells = line.split('\t')
+                else:
+                    cells = line.split(',')
+                cells = [c.strip() for c in cells]
+                if cells:
+                    rows_data.append(cells)
+
+            if not rows_data:
+                QMessageBox.warning(self, "Parse Error", "Could not parse clipboard data.")
+                return
+
+            # Detect headers
+            has_rpm_header = self._detect_rpm_header(rows_data[0])
+            has_load_header = self._detect_load_header(rows_data, has_rpm_header)
+
+            # Extract axes and data
+            if has_rpm_header and has_load_header:
+                rpm_axis = self._parse_numeric_row(rows_data[0][1:])
+                load_axis = []
+                target_data = []
+                for row in rows_data[1:]:
+                    if row:
+                        load_axis.append(self._parse_numeric_value(row[0]))
+                        target_data.append(self._parse_numeric_row(row[1:]))
+            elif has_rpm_header:
+                rpm_axis = self._parse_numeric_row(rows_data[0])
+                load_axis = self._generate_default_load_axis(len(rows_data) - 1)
+                target_data = [self._parse_numeric_row(row) for row in rows_data[1:]]
+            elif has_load_header:
+                load_axis = []
+                target_data = []
+                for row in rows_data:
+                    if row:
+                        load_axis.append(self._parse_numeric_value(row[0]))
+                        target_data.append(self._parse_numeric_row(row[1:]))
+                rpm_axis = self._generate_default_rpm_axis(len(target_data[0]) if target_data else 0)
+            else:
+                rpm_axis = self._generate_default_rpm_axis(len(rows_data[0]) if rows_data else 0)
+                load_axis = self._generate_default_load_axis(len(rows_data))
+                target_data = [self._parse_numeric_row(row) for row in rows_data]
+
+            if not target_data or not target_data[0]:
+                QMessageBox.warning(self, "Parse Error", "No valid data found in clipboard.")
+                return
+
+            n_rows = len(target_data)
+            n_cols = len(target_data[0])
+
+            # Validate dimensions
+            for i, row in enumerate(target_data):
+                if len(row) != n_cols:
+                    QMessageBox.warning(
+                        self, "Parse Error",
+                        f"Row {i+1} has {len(row)} columns, expected {n_cols}."
+                    )
+                    return
+
+            if len(rpm_axis) != n_cols:
+                rpm_axis = self._generate_default_rpm_axis(n_cols)
+            if len(load_axis) != n_rows:
+                load_axis = self._generate_default_load_axis(n_rows)
+
+            # Store the target map
+            self.target_afr_map = np.array(target_data, dtype=np.float64)
+            self.target_rpm_axis = rpm_axis
+            self.target_load_axis = load_axis
+
+            # Update display
+            self._setup_target_table()
+            self._update_target_display()
+
+            self.target_cell_info_label.setText(f"Pasted {n_rows}x{n_cols} target map")
+            self.target_cell_info_label.setStyleSheet("color: #4ec9b0; padding: 4px;")
+            self.copy_target_btn.setEnabled(True)
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Paste Error",
+                f"Failed to parse clipboard data:\n{e}"
+            )
+
+    def _copy_target_to_clipboard(self):
+        """Copy the target AFR/Lambda map to clipboard."""
+        if self.target_afr_map is None:
+            return
+
+        # Get display mode
+        display_mode = self.target_display_combo.currentText()
+        stoich = 14.7 if "Gasoline" in display_mode else (9.765 if "E85" in display_mode else 1.0)
+
+        # Build tab-separated values string
+        lines = []
+        rows, cols = self.target_afr_map.shape
+        for row in range(rows):
+            row_values = []
+            for col in range(cols):
+                value = self.target_afr_map[row, col]
+                if display_mode != "Lambda":
+                    value = value * stoich
+                row_values.append(f"{value:.2f}")
+            lines.append("\t".join(row_values))
+
+        clipboard = QApplication.clipboard()
+        clipboard.setText("\n".join(lines))
+
+        self.target_cell_info_label.setText("Copied to clipboard")
+        self.target_cell_info_label.setStyleSheet("color: #4ec9b0; padding: 4px;")
+
+    def _setup_target_table(self):
+        """Set up the target AFR/Lambda table structure."""
+        if self.target_afr_map is None:
+            return
+
+        rows, cols = self.target_afr_map.shape
+
+        self.target_table.setRowCount(rows)
+        self.target_table.setColumnCount(cols)
+
+        # Set column headers (RPM values)
+        headers = [str(int(rpm)) for rpm in self.target_rpm_axis]
+        self.target_table.setHorizontalHeaderLabels(headers)
+
+        # Set row headers (Load values)
+        row_headers = [f"{load:.0f}%" for load in self.target_load_axis]
+        self.target_table.setVerticalHeaderLabels(row_headers)
+
+        # Set columns to stretch
+        header = self.target_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header.sectionDoubleClicked.connect(self._edit_target_column_header)
+
+        vert_header = self.target_table.verticalHeader()
+        vert_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        vert_header.sectionDoubleClicked.connect(self._edit_target_row_header)
+
+    def _update_target_display(self, display_mode: str = None):
+        """Update the target table display based on selected format."""
+        if self.target_afr_map is None:
+            return
+
+        if display_mode is None:
+            display_mode = self.target_display_combo.currentText()
+
+        # Get stoichiometric ratio for conversion
+        if "Gasoline" in display_mode:
+            stoich = 14.7
+        elif "E85" in display_mode:
+            stoich = 9.765
+        else:
+            stoich = 1.0  # Lambda
+
+        rows, cols = self.target_afr_map.shape
+
+        self.target_table.blockSignals(True)
+
+        for row in range(rows):
+            for col in range(cols):
+                # Target map is stored as Lambda internally
+                lambda_val = self.target_afr_map[row, col]
+                display_val = lambda_val * stoich if stoich > 1 else lambda_val
+
+                text = f"{display_val:.2f}"
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+                # Color based on rich/lean (lambda-based)
+                color = self._get_target_color(lambda_val)
+                item.setBackground(QBrush(color))
+
+                # Set text color based on brightness
+                brightness = (color.red() * 299 + color.green() * 587 + color.blue() * 114) / 1000
+                text_color = QColor(255, 255, 255) if brightness < 128 else QColor(0, 0, 0)
+                item.setForeground(QBrush(text_color))
+
+                self.target_table.setItem(row, col, item)
+
+        self.target_table.blockSignals(False)
+        self.target_table.viewport().update()
+
+    def _get_target_color(self, lambda_val: float) -> QColor:
+        """Get color for target Lambda value."""
+        if lambda_val < 0.80:
+            return QColor(70, 70, 180)  # Very rich - blue
+        elif lambda_val < 0.90:
+            return QColor(80, 100, 160)  # Rich - blue-ish
+        elif lambda_val < 0.98:
+            return QColor(100, 130, 80)  # Slightly rich - green-ish
+        elif lambda_val <= 1.02:
+            return QColor(80, 150, 80)  # Stoich - green
+        elif lambda_val < 1.10:
+            return QColor(180, 150, 60)  # Slightly lean - yellow
+        else:
+            return QColor(180, 80, 80)  # Lean - red
+
+    def _on_target_cell_clicked(self, row: int, col: int):
+        """Handle target table cell click."""
+        if self.target_afr_map is None:
+            return
+
+        rpm = self.target_rpm_axis[col]
+        load = self.target_load_axis[row]
+        lambda_val = self.target_afr_map[row, col]
+
+        # Show in current display mode
+        display_mode = self.target_display_combo.currentText()
+        if "Gasoline" in display_mode:
+            afr = lambda_val * 14.7
+            info = f"RPM: {rpm:.0f} | Load: {load:.0f}% | Lambda: {lambda_val:.3f} | AFR: {afr:.1f}"
+        elif "E85" in display_mode:
+            afr = lambda_val * 9.765
+            info = f"RPM: {rpm:.0f} | Load: {load:.0f}% | Lambda: {lambda_val:.3f} | AFR (E85): {afr:.1f}"
+        else:
+            info = f"RPM: {rpm:.0f} | Load: {load:.0f}% | Lambda: {lambda_val:.3f}"
+
+        self.target_cell_info_label.setText(info)
+        self.target_cell_info_label.setStyleSheet("color: #cccccc; padding: 4px;")
+
+    def _edit_target_column_header(self, col: int):
+        """Edit target table column header (RPM value)."""
+        if not self.target_rpm_axis or col >= len(self.target_rpm_axis):
+            return
+
+        current_value = self.target_rpm_axis[col]
+
+        value, ok = QInputDialog.getDouble(
+            self,
+            "Edit RPM Value",
+            f"Enter new RPM value for column {col + 1}:",
+            current_value,
+            0, 20000, 0
+        )
+
+        if ok:
+            self.target_rpm_axis[col] = value
+            self.target_table.setHorizontalHeaderItem(
+                col, QTableWidgetItem(str(int(value)))
+            )
+
+    def _edit_target_row_header(self, row: int):
+        """Edit target table row header (Load value)."""
+        if not self.target_load_axis or row >= len(self.target_load_axis):
+            return
+
+        current_value = self.target_load_axis[row]
+
+        value, ok = QInputDialog.getDouble(
+            self,
+            "Edit Load Value",
+            f"Enter new Load/TPS value for row {row + 1}:",
+            current_value,
+            0, 120, 1
+        )
+
+        if ok:
+            self.target_load_axis[row] = value
+            self.target_table.setVerticalHeaderItem(
+                row, QTableWidgetItem(f"{value:.0f}%")
+            )
+
+    # ========== Engine Model Methods ==========
+
+    def _load_engine_configs(self):
+        """Load saved engine configurations into combo box."""
+        self.engine_combo.blockSignals(True)
+        self.engine_combo.clear()
+
+        # Add "None" option
+        self.engine_combo.addItem("-- Select Engine --")
+
+        # Add saved configs
+        config_names = EngineConfigManager.get_config_names()
+        for name in config_names:
+            self.engine_combo.addItem(name)
+
+        # Try to load last used config from settings
+        settings_file = self._get_settings_file()
+        if settings_file.exists():
+            try:
+                with open(settings_file, 'r') as f:
+                    settings = json.load(f)
+                last_engine = settings.get('last_engine_config')
+                if last_engine and last_engine in config_names:
+                    self.engine_combo.setCurrentText(last_engine)
+            except (json.JSONDecodeError, IOError):
+                pass
+
+        self.engine_combo.blockSignals(False)
+
+        # Manually trigger selection if an engine was restored
+        current = self.engine_combo.currentText()
+        if current and current != "-- Select Engine --":
+            self._on_engine_selected(current)
+
+    def _on_engine_selected(self, name: str):
+        """Handle engine selection change."""
+        if name == "-- Select Engine --":
+            self.engine_config = None
+            self.ve_model = None
+            self._update_model_ui()
+            return
+
+        configs = EngineConfigManager.load_configs()
+        if name in configs:
+            self.engine_config = configs[name]
+            self.ve_model = AlphaNModel(self.engine_config)
+            self._update_model_ui()
+
+            # Save as last used
+            self._save_last_engine(name)
+
+    def _save_last_engine(self, name: str):
+        """Save last used engine config name to settings."""
+        settings_file = self._get_settings_file()
+        try:
+            settings = {}
+            if settings_file.exists():
+                with open(settings_file, 'r') as f:
+                    settings = json.load(f)
+
+            settings['last_engine_config'] = name
+
+            with open(settings_file, 'w') as f:
+                json.dump(settings, f, indent=2)
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    def _open_engine_config(self):
+        """Open engine configuration dialog."""
+        from mfviewer.gui.engine_config_dialog import EngineConfigDialog
+
+        dialog = EngineConfigDialog(self.engine_config, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_config = dialog.get_config()
+            if new_config:
+                self.engine_config = new_config
+                self.ve_model = AlphaNModel(self.engine_config)
+
+                # Refresh combo and select new config
+                self._load_engine_configs()
+                self.engine_combo.setCurrentText(new_config.name)
+
+                self._update_model_ui()
+
+    def _update_model_ui(self):
+        """Update model fitting UI state."""
+        has_engine = self.engine_config is not None
+        has_data = self.hit_count_map is not None and bool(np.sum(self.hit_count_map) > 0)
+
+        self.fit_model_btn.setEnabled(bool(has_engine and has_data))
+
+        has_model = self.ve_model is not None and self.ve_model.fit_stats is not None
+        self.fill_cells_btn.setEnabled(bool(has_model))
+
+        # Update fit statistics display
+        if has_model and self.ve_model.fit_stats:
+            stats = self.ve_model.fit_stats
+            self.fit_r2_label.setText(f"R\u00b2: {stats.r_squared:.3f}")
+            self.fit_rmse_label.setText(f"RMSE: {stats.rmse:.2f}%")
+
+            # Color R² based on quality
+            if stats.r_squared >= 0.90:
+                r2_color = "#4ec9b0"  # Green
+            elif stats.r_squared >= 0.75:
+                r2_color = "#dcdcaa"  # Yellow
+            else:
+                r2_color = "#ce9178"  # Orange
+            self.fit_r2_label.setStyleSheet(f"color: {r2_color};")
+        else:
+            self.fit_r2_label.setText("R\u00b2: -")
+            self.fit_r2_label.setStyleSheet("color: #aaaaaa;")
+            self.fit_rmse_label.setText("RMSE: -")
+
+        # Update cell counts
+        self._update_cell_counts()
+
+    def _update_cell_counts(self):
+        """Update measured/extrapolated cell count labels."""
+        if self.hit_count_map is not None:
+            min_samples = self.min_samples_spin.value()
+            measured = int(np.sum(self.hit_count_map >= min_samples))
+            self.measured_cells_label.setText(f"Measured: {measured}")
+        else:
+            self.measured_cells_label.setText("Measured: -")
+
+        if self.extrapolated_mask is not None:
+            extrapolated = int(np.sum(self.extrapolated_mask))
+            self.extrapolated_cells_label.setText(f"Extrapolated: {extrapolated}")
+        else:
+            self.extrapolated_cells_label.setText("Extrapolated: -")
+
+    def _fit_model(self):
+        """Fit the VE model to measured data."""
+        if self.ve_model is None or self.hit_count_map is None:
+            return
+
+        if self.corrected_ve_map is None:
+            QMessageBox.warning(
+                self, "No Data",
+                "Calculate corrections first before fitting the model."
+            )
+            return
+
+        min_samples = self.min_samples_spin.value()
+
+        # Collect measured data points
+        rpm_values = []
+        tps_values = []
+        ve_values = []
+        weights = []
+
+        rows, cols = self.hit_count_map.shape
+        for row in range(rows):
+            for col in range(cols):
+                hit_count = self.hit_count_map[row, col]
+                if hit_count >= min_samples:
+                    # Get cell center values
+                    rpm = self.rpm_axis[col]
+                    tps = self.load_axis[row]
+                    ve = self.corrected_ve_map[row, col]
+
+                    rpm_values.append(rpm)
+                    tps_values.append(tps)
+                    ve_values.append(ve)
+                    weights.append(hit_count)
+
+        if len(rpm_values) < 5:
+            QMessageBox.warning(
+                self, "Insufficient Data",
+                f"Need at least 5 cells with >= {min_samples} samples to fit model.\n"
+                f"Found: {len(rpm_values)} cells."
+            )
+            return
+
+        # Convert to numpy arrays
+        rpm_arr = np.array(rpm_values, dtype=np.float64)
+        tps_arr = np.array(tps_values, dtype=np.float64)
+        ve_arr = np.array(ve_values, dtype=np.float64)
+        weight_arr = np.array(weights, dtype=np.float64)
+
+        # Fit the model
+        stats = self.ve_model.fit(rpm_arr, tps_arr, ve_arr, weight_arr)
+
+        # Update UI
+        self._update_model_ui()
+
+        # Show result
+        if stats.r_squared > 0:
+            QMessageBox.information(
+                self, "Model Fitted",
+                f"Model fitted successfully!\n\n"
+                f"R\u00b2: {stats.r_squared:.3f}\n"
+                f"RMSE: {stats.rmse:.2f}%\n"
+                f"Max Error: {stats.max_error:.2f}%\n"
+                f"Data Points: {stats.n_points}"
+            )
+        else:
+            QMessageBox.warning(
+                self, "Fit Failed",
+                "Model fitting failed or produced poor results.\n"
+                "Try adjusting engine parameters or getting more data."
+            )
+
+    def _fill_empty_cells(self):
+        """Fill empty cells using the fitted model."""
+        if self.ve_model is None or self.ve_model.fit_stats is None:
+            QMessageBox.warning(
+                self, "No Model",
+                "Fit the model first before filling empty cells."
+            )
+            return
+
+        if self.corrected_ve_map is None:
+            return
+
+        min_samples = self.min_samples_spin.value()
+        rows, cols = self.corrected_ve_map.shape
+
+        # Initialize extrapolated mask
+        self.extrapolated_mask = np.zeros((rows, cols), dtype=bool)
+
+        filled_count = 0
+
+        for row in range(rows):
+            for col in range(cols):
+                # Skip cells with sufficient measured data
+                if self.hit_count_map[row, col] >= min_samples:
+                    continue
+
+                # Get cell center values
+                rpm = self.rpm_axis[col]
+                tps = self.load_axis[row]
+
+                # Predict VE using model
+                predicted_ve = self.ve_model.predict(rpm, tps)
+
+                # Apply to corrected map
+                self.corrected_ve_map[row, col] = predicted_ve
+
+                # Calculate implied correction
+                if self.base_ve_map[row, col] > 0:
+                    self.correction_map[row, col] = predicted_ve / self.base_ve_map[row, col]
+
+                # Mark as extrapolated
+                self.extrapolated_mask[row, col] = True
+                filled_count += 1
+
+        # Update display
+        self._update_map_display()
+        self._update_cell_counts()
+        self.save_map_btn.setEnabled(True)
+        self.copy_map_btn.setEnabled(True)
+
+        QMessageBox.information(
+            self, "Cells Filled",
+            f"Filled {filled_count} empty cells using the engine model.\n"
+            f"Extrapolated cells are shown with a blue tint."
+        )
 
     def _apply_dark_theme(self):
         """Apply dark theme styling to the dialog."""
@@ -1113,6 +2327,51 @@ class VEMapDialog(QDialog):
                 width: 2px;
             }
             QProgressDialog {
+                background-color: #1e1e1e;
+                color: #dcdcdc;
+            }
+            QTabWidget::pane {
+                border: 1px solid #3e3e42;
+                background-color: #1e1e1e;
+            }
+            QTabWidget::tab-bar {
+                alignment: left;
+            }
+            QTabBar::tab {
+                background-color: #2d2d2d;
+                color: #cccccc;
+                padding: 8px 16px;
+                border: 1px solid #3e3e42;
+                border-bottom: none;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background-color: #1e1e1e;
+                color: #ffffff;
+                border-bottom: 2px solid #007acc;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #383838;
+            }
+            QCheckBox {
+                color: #dcdcdc;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+                border-radius: 2px;
+                border: 2px solid #3e3e42;
+                background-color: #252526;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #007acc;
+                border-color: #007acc;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #007acc;
+            }
+            QInputDialog {
                 background-color: #1e1e1e;
                 color: #dcdcdc;
             }

@@ -816,10 +816,10 @@ class PlotWidget(QWidget):
                         q3 = np.percentile(channel_values, 75)
                         iqr = q3 - q1
 
-                        # Define outlier bounds (10.0 * IQR for excluding only extremely aberrant values)
-                        # Standard is 1.5 * IQR; 10.0 only removes sensor errors and corrupt data
-                        lower_bound = q1 - 10.0 * iqr
-                        upper_bound = q3 + 10.0 * iqr
+                        # Define outlier bounds (20.0 * IQR for excluding only extremely aberrant values)
+                        # Standard is 1.5 * IQR; 20.0 only removes severe sensor errors and corrupt data
+                        lower_bound = q1 - 20.0 * iqr
+                        upper_bound = q3 + 20.0 * iqr
 
                         # Filter values within bounds for this channel
                         filtered_values = channel_values[

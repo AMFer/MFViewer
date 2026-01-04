@@ -49,6 +49,21 @@ A Python-based desktop application for viewing and analyzing telemetry log files
   - Checkbox interface for instant log visibility toggle
   - All log data stored in memory for responsive switching
 
+### Dyno Pull Analyzer
+- **WOT Pull Analysis**: Automatic detection and analysis of Wide Open Throttle dyno pulls
+  - Auto-detects WOT regions using configurable TPS threshold (default 95%)
+  - Summary dashboard with pass/warn/fail status indicators
+  - Detailed RPM-binned breakdown table with color-coded rows
+- **Key Metrics Monitored**:
+  - **AFR/Lambda**: Average, min, max with lean/rich warnings (targets ~12.5:1 for NA)
+  - **Knock Detection**: Counts knock events and timing retard
+  - **Oil Pressure**: Monitors for drops below minimum threshold or excessive percentage drops
+  - **Fuel Pressure**: Tracks stability and pressure drops during pulls
+  - **Ignition Timing**: Analyzes timing retard events
+- **Smart Channel Detection**: Automatically finds common channel names (Engine Speed, TPS, etc.)
+- **Configurable Thresholds**: Adjust AFR target, oil pressure minimum, RPM bin size
+- **Persistent Settings**: All settings and channel mappings saved between sessions
+
 ### Fuel VE Map Calculator
 - **VE Correction Analysis**: Calculate volumetric efficiency corrections from telemetry data
   - Load base VE map from CSV (supports TPS and MAP-based load axes)
@@ -62,7 +77,8 @@ A Python-based desktop application for viewing and analyzing telemetry log files
   - Configurable minimum sample threshold for reliable corrections
   - Double-click cells to remove individual corrections
 - **Save Corrected Maps**: Export corrected VE maps to CSV for ECU import
-- **Persistent Settings**: Min samples setting saved between sessions
+- **Persistent Settings**: Min samples, bins-only mode, last VE map file, and folder paths saved between sessions
+- **Bins-Only Mode**: Record which map cells are hit without applying corrections (teal highlighting)
 
 ### X-Y Scatter Plots
 - **Channel vs Channel Plotting**: Create scatter plots to visualize relationships between any two channels
@@ -123,7 +139,7 @@ A Python-based desktop application for viewing and analyzing telemetry log files
 
 ### For End Users (Windows)
 
-1. Download the latest installer: `MFViewer-Setup-0.5.5.exe`
+1. Download the latest installer: `MFViewer-Setup-0.5.6.exe`
 2. Run the installer and follow the prompts
 3. Launch MFViewer from the Start Menu or Desktop shortcut
 
@@ -237,7 +253,8 @@ python -m mfviewer.main
 - **Ctrl+Shift+T**: Time synchronization dialog
 - **F2**: Rename current tab
 - **Ctrl+Q**: Quit application
-- **Ctrl+Shift+V**: Open Fuel VE Map Calculator
+- **Ctrl+D**: Open Dyno Pull Analyzer
+- **Ctrl+M**: Open Fuel VE Map Calculator
 
 #### Cursor Navigation
 - **Left/Right Arrow**: Move cursor by 1 pixel (precise navigation)

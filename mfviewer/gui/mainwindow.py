@@ -25,6 +25,7 @@ from mfviewer.gui.preferences_dialog import PreferencesDialog
 from mfviewer.gui.channel_text_mapping_dialog import ChannelTextMappingDialog
 from mfviewer.gui.debug_settings_dialog import DebugSettingsDialog
 from mfviewer.gui.ve_map_dialog import VEMapDialog
+from mfviewer.gui.dyno_analyzer_dialog import DynoAnalyzerDialog
 from mfviewer.utils.config import TabConfiguration
 from mfviewer.utils.units import UnitsManager
 from mfviewer.utils import debug_log
@@ -282,6 +283,7 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("MFViewer - Motorsports Fusion Telemetry Viewer")
         self.setMinimumSize(1200, 800)
+        self.resize(1600, 1000)  # Initial size - larger than minimum
 
         # Set window icon
         icon_path = get_resource_path('Assets/MFViewer.ico')
@@ -824,6 +826,12 @@ class MainWindow(QMainWindow):
         ve_map_action.setShortcut(QKeySequence("Ctrl+M"))
         ve_map_action.triggered.connect(self._show_ve_map_dialog)
         tools_menu.addAction(ve_map_action)
+
+        # Dyno Pull Analyzer
+        dyno_action = QAction("&Dyno Pull Analyzer...", self)
+        dyno_action.setShortcut(QKeySequence("Ctrl+D"))
+        dyno_action.triggered.connect(self._show_dyno_analyzer_dialog)
+        tools_menu.addAction(dyno_action)
 
         tools_menu.addSeparator()
 
@@ -2099,6 +2107,11 @@ class MainWindow(QMainWindow):
     def _show_ve_map_dialog(self):
         """Show the Fuel VE Map Calculator dialog."""
         dialog = VEMapDialog(self.log_manager, self.units_manager, self)
+        dialog.exec()
+
+    def _show_dyno_analyzer_dialog(self):
+        """Show the Dyno Pull Analyzer dialog."""
+        dialog = DynoAnalyzerDialog(self.log_manager, self.units_manager, self)
         dialog.exec()
 
     def _refresh_all_plots(self):

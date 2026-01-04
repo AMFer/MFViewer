@@ -398,8 +398,12 @@ class XYPlotWidget(QWidget):
                 return
             x_data = np.array(x_series.values, dtype=np.float32)
             y_data = np.array(y_series.values, dtype=np.float32)
-            # Time is stored as the DataFrame index (Seconds)
-            time_data = np.array(x_series.index.values, dtype=np.float32)
+            # Time is stored as the DataFrame index (Seconds) - should already be float
+            try:
+                time_data = np.array(x_series.index.values, dtype=np.float32)
+            except (ValueError, TypeError):
+                # Fallback if index is not numeric (shouldn't happen with proper parsing)
+                time_data = None
         elif hasattr(x_channel_info, 'data'):
             # Mock object with data attribute
             x_data = np.array(x_channel_info.data, dtype=np.float32)
@@ -634,3 +638,16 @@ class XYPlotWidget(QWidget):
                 self.y_combo.setCurrentText(self.y_channel)
 
         self._update_plot()
+
+    def set_cursor_position(self, x_pos: float, defer_repaint: bool = False):
+        """Set cursor position (compatibility with PlotWidget interface).
+
+        XY plots don't have a time-based cursor, so this is a no-op.
+        The method exists for compatibility when iterating over mixed plot types.
+
+        Args:
+            x_pos: X position (ignored for XY plots)
+            defer_repaint: Whether to defer repaint (ignored for XY plots)
+        """
+        # XY plots don't use cursor position - they're not time-series
+        pass
