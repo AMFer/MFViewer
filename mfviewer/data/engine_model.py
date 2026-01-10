@@ -81,6 +81,7 @@ class FitStatistics:
     n_points: int = 0
     residuals: np.ndarray = field(default_factory=lambda: np.array([]))
     cell_errors: Optional[np.ndarray] = None  # Same shape as VE map
+    error_message: Optional[str] = None  # Error message if fitting failed
 
     def to_dict(self) -> Dict:
         """Convert to dictionary (without numpy arrays)."""
@@ -437,9 +438,8 @@ class AlphaNModel:
             return self.fit_stats
 
         except Exception as e:
-            # Fitting failed, return empty stats
-            print(f"Model fitting failed: {e}")
-            return FitStatistics(n_points=len(rpm_values))
+            # Fitting failed, return stats with error message
+            return FitStatistics(n_points=len(rpm_values), error_message=str(e))
 
     def _fit_simple(self, rpm_values: np.ndarray, tps_values: np.ndarray,
                     ve_values: np.ndarray, weights: Optional[np.ndarray] = None) -> FitStatistics:

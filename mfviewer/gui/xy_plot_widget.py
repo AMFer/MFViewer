@@ -93,6 +93,16 @@ class XYPlotWidget(QWidget):
         self.x_channel: Optional[str] = None
         self.y_channel: Optional[str] = None
 
+        # Cursor support - XY plots use crosshairs at the X/Y values corresponding to cursor time
+        self.cursor_line = None  # Compatibility attribute (not used directly)
+        self.cursor_active = False
+        self.cursor_callback = None
+        self.cursor_x_position = None  # Time position of cursor
+
+        # Crosshair lines for XY plot
+        self._crosshair_v = None  # Vertical line (X value)
+        self._crosshair_h = None  # Horizontal line (Y value)
+
         # Plot data
         self.scatter_item = None
 
@@ -578,6 +588,14 @@ class XYPlotWidget(QWidget):
             self.plot_widget.removeItem(self.scatter_item)
             self.scatter_item = None
 
+        # Remove crosshairs
+        if self._crosshair_v is not None:
+            self.plot_widget.removeItem(self._crosshair_v)
+            self._crosshair_v = None
+        if self._crosshair_h is not None:
+            self.plot_widget.removeItem(self._crosshair_h)
+            self._crosshair_h = None
+
         self.x_combo.setCurrentIndex(-1)
         self.y_combo.setCurrentIndex(-1)
         self.x_channel = None
@@ -639,15 +657,120 @@ class XYPlotWidget(QWidget):
 
         self._update_plot()
 
-    def set_cursor_position(self, x_pos: float, defer_repaint: bool = False):
-        """Set cursor position (compatibility with PlotWidget interface).
+    def set_cursor_position(self, time_pos: float, defer_repaint: bool = False):
+        """Set cursor position and show crosshairs at corresponding X/Y values.
 
-        XY plots don't have a time-based cursor, so this is a no-op.
-        The method exists for compatibility when iterating over mixed plot types.
+        For XY plots, the cursor position is a time value. We find the X and Y
+        channel values at that time and display crosshairs at that point.
+
+        Note: defer_repaint is accepted for API compatibility but XY plots always
+        update their crosshairs immediately since they use PyQtGraph's InfiniteLine
+        which is efficient and doesn't have the same repaint overhead as overlays.
 
         Args:
-            x_pos: X position (ignored for XY plots)
-            defer_repaint: Whether to defer repaint (ignored for XY plots)
+            time_pos: Time position to show cursor at
+            defer_repaint: Accepted for API compatibility (ignored for XY plots)
         """
-        # XY plots don't use cursor position - they're not time-series
-        pass
+        self.cursor_x_position = time_pos
+        self.cursor_active = True
+
+        # Need time data and channel data to show crosshairs
+        if self._time_data is None or self._x_data is None or self._y_data is None:
+            self._hide_crosshairs()
+            return
+
+        if len(self._time_data) == 0:
+            self._hide_crosshairs()
+            return
+
+        # Find X and Y values at the given time position using interpolation
+        x_val, y_val = self._interpolate_at_time(time_pos)
+
+        if x_val is None or y_val is None:
+            self._hide_crosshairs()
+            return
+
+        # Show crosshairs at the interpolated X/Y position
+        # XY plots always show crosshairs regardless of defer_repaint since
+        # InfiniteLine is lightweight and doesn't trigger full plot repaints
+        self._show_crosshairs(x_val, y_val)
+
+    def _interpolate_at_time(self, time_pos: float) -> Tuple[Optional[float], Optional[float]]:
+        """Interpolate X and Y channel values at a given time position.
+
+        Args:
+            time_pos: Time position to interpolate at
+
+        Returns:
+            Tuple of (x_value, y_value) or (None, None) if outside data range
+        """
+        if self._time_data is None or len(self._time_data) == 0:
+            return None, None
+
+        time_data = self._time_data
+        x_data = self._x_data
+        y_data = self._y_data
+
+        # Handle boundary cases
+        if time_pos <= time_data[0]:
+            return float(x_data[0]), float(y_data[0])
+        elif time_pos >= time_data[-1]:
+            return float(x_data[-1]), float(y_data[-1])
+
+        # Find insertion point for interpolation
+        idx = np.searchsorted(time_data, time_pos)
+
+        if idx == 0:
+            return float(x_data[0]), float(y_data[0])
+        elif idx >= len(time_data):
+            return float(x_data[-1]), float(y_data[-1])
+
+        # Linear interpolation
+        t0, t1 = time_data[idx - 1], time_data[idx]
+        if t1 == t0:
+            return float(x_data[idx - 1]), float(y_data[idx - 1])
+
+        # Interpolation factor
+        t = (time_pos - t0) / (t1 - t0)
+
+        x_val = x_data[idx - 1] + t * (x_data[idx] - x_data[idx - 1])
+        y_val = y_data[idx - 1] + t * (y_data[idx] - y_data[idx - 1])
+
+        return float(x_val), float(y_val)
+
+    def _show_crosshairs(self, x_val: float, y_val: float):
+        """Show crosshairs at the given X/Y position.
+
+        Args:
+            x_val: X-axis value for vertical line
+            y_val: Y-axis value for horizontal line
+        """
+        # Create crosshair lines if they don't exist
+        if self._crosshair_v is None:
+            self._crosshair_v = pg.InfiniteLine(
+                angle=90,  # Vertical
+                pen=pg.mkPen(color=(255, 255, 0), width=1)
+            )
+            self.plot_widget.addItem(self._crosshair_v)
+
+        if self._crosshair_h is None:
+            self._crosshair_h = pg.InfiniteLine(
+                angle=0,  # Horizontal
+                pen=pg.mkPen(color=(255, 255, 0), width=1)
+            )
+            self.plot_widget.addItem(self._crosshair_h)
+
+        # Update positions
+        self._crosshair_v.setPos(x_val)
+        self._crosshair_h.setPos(y_val)
+
+        # Show them
+        self._crosshair_v.setVisible(True)
+        self._crosshair_h.setVisible(True)
+
+    def _hide_crosshairs(self):
+        """Hide the crosshair lines."""
+        if self._crosshair_v is not None:
+            self._crosshair_v.setVisible(False)
+        if self._crosshair_h is not None:
+            self._crosshair_h.setVisible(False)

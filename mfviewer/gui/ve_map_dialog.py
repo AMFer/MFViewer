@@ -22,10 +22,10 @@ from PyQt6.QtWidgets import (
     QHeaderView, QFileDialog, QMessageBox,
     QWidget, QSpinBox, QRadioButton, QButtonGroup,
     QProgressDialog, QAbstractItemView, QStyledItemDelegate, QStyle,
-    QTabWidget, QCheckBox, QApplication, QInputDialog
+    QTabWidget, QCheckBox, QApplication, QInputDialog, QMenu
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QColor, QBrush, QPalette, QShortcut, QKeySequence
+from PyQt6.QtGui import QColor, QBrush, QPalette, QShortcut, QKeySequence, QAction
 
 
 class ColoredCellDelegate(QStyledItemDelegate):
@@ -206,9 +206,9 @@ class VEMapDialog(QDialog):
         self.load_map_btn.clicked.connect(self._load_map_dialog)
         toolbar_layout.addWidget(self.load_map_btn)
 
-        self.save_map_btn = QPushButton("Save Corrected Map...")
+        self.save_map_btn = QPushButton("Save VE Map...")
         self.save_map_btn.clicked.connect(self._save_corrected_map)
-        self.save_map_btn.setEnabled(False)
+        self.save_map_btn.setEnabled(False)  # Enabled when a map is loaded
         toolbar_layout.addWidget(self.save_map_btn)
 
         self.copy_map_btn = QPushButton("Copy to Clipboard")
@@ -219,8 +219,14 @@ class VEMapDialog(QDialog):
 
         self.paste_map_btn = QPushButton("Paste from Clipboard")
         self.paste_map_btn.clicked.connect(self._paste_map_from_clipboard)
-        self.paste_map_btn.setToolTip("Paste VE map values from clipboard (with or without headers)")
+        self.paste_map_btn.setToolTip("Paste VE map with headers (first row = RPM, first column = Load)")
         toolbar_layout.addWidget(self.paste_map_btn)
+
+        self.paste_ve_only_btn = QPushButton("Paste VE Only")
+        self.paste_ve_only_btn.clicked.connect(self._paste_ve_only_from_clipboard)
+        self.paste_ve_only_btn.setToolTip("Paste only VE values from clipboard, keeping current RPM/Load axes")
+        self.paste_ve_only_btn.setEnabled(False)  # Enable only when a map is loaded
+        toolbar_layout.addWidget(self.paste_ve_only_btn)
 
         toolbar_layout.addSpacing(20)
 
@@ -594,7 +600,8 @@ class VEMapDialog(QDialog):
 
             # Enable calculate if we have logs
             self.calculate_btn.setEnabled(self.log_manager.get_main_log() is not None)
-            self.save_map_btn.setEnabled(False)
+            self.save_map_btn.setEnabled(True)
+            self.paste_ve_only_btn.setEnabled(True)
 
         except Exception as e:
             QMessageBox.critical(
@@ -626,12 +633,18 @@ class VEMapDialog(QDialog):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         # Connect double-click for editing column headers
         header.sectionDoubleClicked.connect(self._edit_column_header)
+        # Enable context menu for column operations
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._show_column_context_menu)
 
         # Set rows to have consistent height
         vert_header = self.map_table.verticalHeader()
         vert_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         # Connect double-click for editing row headers
         vert_header.sectionDoubleClicked.connect(self._edit_row_header)
+        # Enable context menu for row operations
+        vert_header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        vert_header.customContextMenuRequested.connect(self._show_row_context_menu)
 
     def _update_map_display(self):
         """Update the map table display based on current view mode."""
@@ -1031,6 +1044,319 @@ class VEMapDialog(QDialog):
             self.status_label.setText(f"Updated Load row {row + 1} to {value:.0f}%")
             self.status_label.setStyleSheet("color: #4ec9b0;")
 
+    def _show_column_context_menu(self, pos):
+        """Show context menu for column (RPM) header operations."""
+        header = self.map_table.horizontalHeader()
+        col = header.logicalIndexAt(pos)
+        if col < 0 or self.base_ve_map is None:
+            return
+
+        menu = QMenu(self)
+
+        # Insert actions
+        insert_before = QAction(f"Insert Column Before ({int(self.rpm_axis[col])} RPM)", self)
+        insert_before.triggered.connect(lambda: self._insert_column(col))
+        menu.addAction(insert_before)
+
+        insert_after = QAction(f"Insert Column After ({int(self.rpm_axis[col])} RPM)", self)
+        insert_after.triggered.connect(lambda: self._insert_column(col + 1))
+        menu.addAction(insert_after)
+
+        menu.addSeparator()
+
+        # Delete action
+        delete_col = QAction(f"Delete Column ({int(self.rpm_axis[col])} RPM)", self)
+        delete_col.triggered.connect(lambda: self._delete_column(col))
+        # Disable if only one column remains
+        if self.base_ve_map.shape[1] <= 1:
+            delete_col.setEnabled(False)
+        menu.addAction(delete_col)
+
+        menu.exec(header.mapToGlobal(pos))
+
+    def _show_row_context_menu(self, pos):
+        """Show context menu for row (Load/TPS) header operations."""
+        header = self.map_table.verticalHeader()
+        row = header.logicalIndexAt(pos)
+        if row < 0 or self.base_ve_map is None:
+            return
+
+        menu = QMenu(self)
+
+        # Insert actions
+        insert_before = QAction(f"Insert Row Before ({self.load_axis[row]:.0f}%)", self)
+        insert_before.triggered.connect(lambda: self._insert_row(row))
+        menu.addAction(insert_before)
+
+        insert_after = QAction(f"Insert Row After ({self.load_axis[row]:.0f}%)", self)
+        insert_after.triggered.connect(lambda: self._insert_row(row + 1))
+        menu.addAction(insert_after)
+
+        menu.addSeparator()
+
+        # Delete action
+        delete_row = QAction(f"Delete Row ({self.load_axis[row]:.0f}%)", self)
+        delete_row.triggered.connect(lambda: self._delete_row(row))
+        # Disable if only one row remains
+        if self.base_ve_map.shape[0] <= 1:
+            delete_row.setEnabled(False)
+        menu.addAction(delete_row)
+
+        menu.exec(header.mapToGlobal(pos))
+
+    def _insert_column(self, col: int):
+        """Insert a new column (RPM breakpoint) at the specified index."""
+        if self.base_ve_map is None:
+            return
+
+        # Determine the new RPM value
+        if col == 0:
+            # Insert before first column
+            new_rpm = self.rpm_axis[0] - 500 if self.rpm_axis[0] > 500 else 0
+        elif col >= len(self.rpm_axis):
+            # Insert after last column
+            new_rpm = self.rpm_axis[-1] + 500
+        else:
+            # Insert between columns - use midpoint
+            new_rpm = (self.rpm_axis[col - 1] + self.rpm_axis[col]) / 2
+
+        # Prompt user for the RPM value
+        value, ok = QInputDialog.getDouble(
+            self,
+            "Insert Column",
+            "Enter RPM value for new column:",
+            new_rpm,
+            0,  # min
+            20000,  # max
+            0  # decimals
+        )
+
+        if not ok:
+            return
+
+        # Insert into RPM axis
+        self.rpm_axis.insert(col, value)
+
+        # Insert column into all map arrays
+        # Use interpolation between neighboring columns for initial values
+        rows = self.base_ve_map.shape[0]
+
+        if col == 0:
+            # Copy from first column
+            new_col = self.base_ve_map[:, 0:1].copy()
+        elif col >= self.base_ve_map.shape[1]:
+            # Copy from last column
+            new_col = self.base_ve_map[:, -1:].copy()
+        else:
+            # Interpolate between neighboring columns
+            left_col = self.base_ve_map[:, col - 1:col]
+            right_col = self.base_ve_map[:, col:col + 1]
+            new_col = (left_col + right_col) / 2
+
+        self.base_ve_map = np.insert(self.base_ve_map, col, new_col.flatten(), axis=1)
+
+        # Update other maps if they exist
+        if self.corrected_ve_map is not None:
+            if col == 0:
+                new_col = self.corrected_ve_map[:, 0:1].copy()
+            elif col >= self.corrected_ve_map.shape[1]:
+                new_col = self.corrected_ve_map[:, -1:].copy()
+            else:
+                new_col = (self.corrected_ve_map[:, col - 1:col] + self.corrected_ve_map[:, col:col + 1]) / 2
+            self.corrected_ve_map = np.insert(self.corrected_ve_map, col, new_col.flatten(), axis=1)
+
+        if self.hit_count_map is not None:
+            self.hit_count_map = np.insert(self.hit_count_map, col, np.zeros(rows), axis=1)
+
+        if self.error_map is not None:
+            self.error_map = np.insert(self.error_map, col, np.zeros(rows), axis=1)
+
+        if self.correction_map is not None:
+            self.correction_map = np.insert(self.correction_map, col, np.ones(rows), axis=1)
+
+        if self.extrapolated_mask is not None:
+            self.extrapolated_mask = np.insert(self.extrapolated_mask, col, np.zeros(rows, dtype=bool), axis=1)
+
+        # Rebuild the table
+        self._setup_map_table()
+        self._update_map_display()
+
+        self.status_label.setText(f"Inserted column at {int(value)} RPM")
+        self.status_label.setStyleSheet("color: #4ec9b0;")
+
+    def _insert_row(self, row: int):
+        """Insert a new row (Load/TPS breakpoint) at the specified index."""
+        if self.base_ve_map is None:
+            return
+
+        # Determine the new Load value
+        if row == 0:
+            # Insert before first row
+            new_load = self.load_axis[0] - 5 if self.load_axis[0] > 5 else 0
+        elif row >= len(self.load_axis):
+            # Insert after last row
+            new_load = min(self.load_axis[-1] + 5, 100)
+        else:
+            # Insert between rows - use midpoint
+            new_load = (self.load_axis[row - 1] + self.load_axis[row]) / 2
+
+        # Prompt user for the Load value
+        value, ok = QInputDialog.getDouble(
+            self,
+            "Insert Row",
+            "Enter Load/TPS value for new row (%):",
+            new_load,
+            0,  # min
+            120,  # max
+            1  # decimals
+        )
+
+        if not ok:
+            return
+
+        # Insert into Load axis
+        self.load_axis.insert(row, value)
+
+        # Insert row into all map arrays
+        cols = self.base_ve_map.shape[1]
+
+        if row == 0:
+            # Copy from first row
+            new_row = self.base_ve_map[0:1, :].copy()
+        elif row >= self.base_ve_map.shape[0]:
+            # Copy from last row
+            new_row = self.base_ve_map[-1:, :].copy()
+        else:
+            # Interpolate between neighboring rows
+            top_row = self.base_ve_map[row - 1:row, :]
+            bottom_row = self.base_ve_map[row:row + 1, :]
+            new_row = (top_row + bottom_row) / 2
+
+        self.base_ve_map = np.insert(self.base_ve_map, row, new_row.flatten(), axis=0)
+
+        # Update other maps if they exist
+        if self.corrected_ve_map is not None:
+            if row == 0:
+                new_row = self.corrected_ve_map[0:1, :].copy()
+            elif row >= self.corrected_ve_map.shape[0]:
+                new_row = self.corrected_ve_map[-1:, :].copy()
+            else:
+                new_row = (self.corrected_ve_map[row - 1:row, :] + self.corrected_ve_map[row:row + 1, :]) / 2
+            self.corrected_ve_map = np.insert(self.corrected_ve_map, row, new_row.flatten(), axis=0)
+
+        if self.hit_count_map is not None:
+            self.hit_count_map = np.insert(self.hit_count_map, row, np.zeros(cols), axis=0)
+
+        if self.error_map is not None:
+            self.error_map = np.insert(self.error_map, row, np.zeros(cols), axis=0)
+
+        if self.correction_map is not None:
+            self.correction_map = np.insert(self.correction_map, row, np.ones(cols), axis=0)
+
+        if self.extrapolated_mask is not None:
+            self.extrapolated_mask = np.insert(self.extrapolated_mask, row, np.zeros(cols, dtype=bool), axis=0)
+
+        # Rebuild the table
+        self._setup_map_table()
+        self._update_map_display()
+
+        self.status_label.setText(f"Inserted row at {value:.0f}%")
+        self.status_label.setStyleSheet("color: #4ec9b0;")
+
+    def _delete_column(self, col: int):
+        """Delete a column (RPM breakpoint) at the specified index."""
+        if self.base_ve_map is None or self.base_ve_map.shape[1] <= 1:
+            return
+
+        rpm_value = self.rpm_axis[col]
+
+        # Confirm deletion
+        reply = QMessageBox.question(
+            self,
+            "Delete Column",
+            f"Delete column at {int(rpm_value)} RPM?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Remove from RPM axis
+        del self.rpm_axis[col]
+
+        # Remove column from all map arrays
+        self.base_ve_map = np.delete(self.base_ve_map, col, axis=1)
+
+        if self.corrected_ve_map is not None:
+            self.corrected_ve_map = np.delete(self.corrected_ve_map, col, axis=1)
+
+        if self.hit_count_map is not None:
+            self.hit_count_map = np.delete(self.hit_count_map, col, axis=1)
+
+        if self.error_map is not None:
+            self.error_map = np.delete(self.error_map, col, axis=1)
+
+        if self.correction_map is not None:
+            self.correction_map = np.delete(self.correction_map, col, axis=1)
+
+        if self.extrapolated_mask is not None:
+            self.extrapolated_mask = np.delete(self.extrapolated_mask, col, axis=1)
+
+        # Rebuild the table
+        self._setup_map_table()
+        self._update_map_display()
+
+        self.status_label.setText(f"Deleted column at {int(rpm_value)} RPM")
+        self.status_label.setStyleSheet("color: #4ec9b0;")
+
+    def _delete_row(self, row: int):
+        """Delete a row (Load/TPS breakpoint) at the specified index."""
+        if self.base_ve_map is None or self.base_ve_map.shape[0] <= 1:
+            return
+
+        load_value = self.load_axis[row]
+
+        # Confirm deletion
+        reply = QMessageBox.question(
+            self,
+            "Delete Row",
+            f"Delete row at {load_value:.0f}%?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Remove from Load axis
+        del self.load_axis[row]
+
+        # Remove row from all map arrays
+        self.base_ve_map = np.delete(self.base_ve_map, row, axis=0)
+
+        if self.corrected_ve_map is not None:
+            self.corrected_ve_map = np.delete(self.corrected_ve_map, row, axis=0)
+
+        if self.hit_count_map is not None:
+            self.hit_count_map = np.delete(self.hit_count_map, row, axis=0)
+
+        if self.error_map is not None:
+            self.error_map = np.delete(self.error_map, row, axis=0)
+
+        if self.correction_map is not None:
+            self.correction_map = np.delete(self.correction_map, row, axis=0)
+
+        if self.extrapolated_mask is not None:
+            self.extrapolated_mask = np.delete(self.extrapolated_mask, row, axis=0)
+
+        # Rebuild the table
+        self._setup_map_table()
+        self._update_map_display()
+
+        self.status_label.setText(f"Deleted row at {load_value:.0f}%")
+        self.status_label.setStyleSheet("color: #4ec9b0;")
+
     def _calculate_corrections(self):
         """Calculate VE corrections from telemetry data."""
         if self.base_ve_map is None:
@@ -1299,22 +1625,26 @@ class VEMapDialog(QDialog):
             self.stats_avg_correction_label.setText("Avg corr: -")
 
     def _save_corrected_map(self):
-        """Save the corrected VE map to a file."""
-        if self.corrected_ve_map is None:
-            QMessageBox.warning(self, "No Data", "No corrected map to save. Calculate corrections first.")
+        """Save the VE map to a file (corrected if available, otherwise base map)."""
+        if self.base_ve_map is None:
+            QMessageBox.warning(self, "No Data", "No VE map to save. Load a map first.")
             return
+
+        # Use corrected map if available, otherwise use base map
+        map_to_save = self.corrected_ve_map if self.corrected_ve_map is not None else self.base_ve_map
+        is_corrected = self.corrected_ve_map is not None
 
         # Use persistent directory if available, then last VE map's directory, then default
         if self._last_save_dir and self._last_save_dir.exists():
-            default_path = self._last_save_dir / "corrected_fuel_ve_map.csv"
+            default_path = self._last_save_dir / "fuel_ve_map.csv"
         elif self._last_ve_map_path and self._last_ve_map_path.parent.exists():
-            default_path = self._last_ve_map_path.parent / "corrected_fuel_ve_map.csv"
+            default_path = self._last_ve_map_path.parent / "fuel_ve_map.csv"
         else:
-            default_path = TabConfiguration.get_default_config_dir() / "corrected_fuel_ve_map.csv"
+            default_path = TabConfiguration.get_default_config_dir() / "fuel_ve_map.csv"
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Corrected VE Map",
+            "Save VE Map",
             str(default_path),
             "CSV Files (*.csv);;All Files (*.*)"
         )
@@ -1332,24 +1662,25 @@ class VEMapDialog(QDialog):
 
         success = VEMapManager.save_map(
             Path(file_path),
-            self.corrected_ve_map,
+            map_to_save,
             self.rpm_axis,
             self.load_axis,
             self.load_type
         )
 
         if success:
+            map_type = "Corrected VE" if is_corrected else "VE"
             QMessageBox.information(
                 self,
                 "Map Saved",
-                f"Corrected VE map saved to:\n{file_path}"
+                f"{map_type} map saved to:\n{file_path}"
             )
             self.status_label.setText(f"Saved: {Path(file_path).name}")
         else:
             QMessageBox.critical(
                 self,
                 "Save Error",
-                "Failed to save the corrected map."
+                "Failed to save the VE map."
             )
 
     def _copy_map_to_clipboard(self):
@@ -1375,7 +1706,120 @@ class VEMapDialog(QDialog):
         self.status_label.setStyleSheet("color: #4ec9b0;")
 
     def _paste_map_from_clipboard(self):
-        """Paste VE map from clipboard with automatic header detection."""
+        """Paste VE map from clipboard.
+
+        Expects format with first row as RPM headers and first column as Load headers.
+        First cell (top-left) is ignored (typically a label or empty).
+        """
+        clipboard = QApplication.clipboard()
+        text = clipboard.text()
+
+        if not text.strip():
+            QMessageBox.warning(self, "Empty Clipboard", "No data found in clipboard.")
+            return
+
+        try:
+            # Parse clipboard text (supports tab or comma separated)
+            lines = text.strip().split('\n')
+            rows_data = []
+
+            for line in lines:
+                # Try tab first, then comma
+                if '\t' in line:
+                    cells = line.split('\t')
+                else:
+                    cells = line.split(',')
+                # Strip whitespace from each cell
+                cells = [c.strip() for c in cells]
+                if cells:  # Skip empty lines
+                    rows_data.append(cells)
+
+            if not rows_data or len(rows_data) < 2:
+                QMessageBox.warning(self, "Parse Error", "Need at least 2 rows (header + data).")
+                return
+
+            if len(rows_data[0]) < 2:
+                QMessageBox.warning(self, "Parse Error", "Need at least 2 columns (header + data).")
+                return
+
+            # First row is RPM headers (skip first cell which is a label)
+            rpm_axis = self._parse_numeric_row(rows_data[0][1:])
+
+            # First column (rows 1+) is Load headers, remaining cells are VE data
+            load_axis = []
+            ve_data = []
+            for row in rows_data[1:]:
+                if row:
+                    load_axis.append(self._parse_numeric_value(row[0]))
+                    ve_data.append(self._parse_numeric_row(row[1:]))
+
+            # Validate dimensions
+            if not ve_data or not ve_data[0]:
+                QMessageBox.warning(self, "Parse Error", "No valid data found in clipboard.")
+                return
+
+            n_rows = len(ve_data)
+            n_cols = len(ve_data[0])
+
+            # Ensure all rows have same number of columns
+            for i, row in enumerate(ve_data):
+                if len(row) != n_cols:
+                    QMessageBox.warning(
+                        self, "Parse Error",
+                        f"Row {i+1} has {len(row)} columns, expected {n_cols}."
+                    )
+                    return
+
+            # Validate axis lengths match data dimensions
+            if len(rpm_axis) != n_cols:
+                QMessageBox.warning(
+                    self, "Parse Error",
+                    f"RPM header has {len(rpm_axis)} values but data has {n_cols} columns."
+                )
+                return
+            if len(load_axis) != n_rows:
+                QMessageBox.warning(
+                    self, "Parse Error",
+                    f"Load header has {len(load_axis)} values but data has {n_rows} rows."
+                )
+                return
+
+            # Convert to numpy array
+            self.base_ve_map = np.array(ve_data, dtype=np.float64)
+            self.rpm_axis = rpm_axis
+            self.load_axis = load_axis
+            self.load_type = "TPS"  # Default
+
+            # Reset correction data
+            self.corrected_ve_map = None
+            self.hit_count_map = None
+            self.error_map = None
+            self.correction_map = None
+            self.extrapolated_mask = None
+
+            # Update UI
+            self._setup_map_table()
+            self._update_map_display()
+            self._update_statistics()
+
+            self.status_label.setText(f"Pasted {n_rows}x{n_cols} map with headers")
+            self.status_label.setStyleSheet("color: #4ec9b0;")
+            self.calculate_btn.setEnabled(self.log_manager.get_main_log() is not None)
+            self.save_map_btn.setEnabled(True)
+            self.paste_ve_only_btn.setEnabled(True)
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Paste Error",
+                f"Failed to parse clipboard data:\n{e}"
+            )
+
+    def _paste_ve_only_from_clipboard(self):
+        """Paste only VE values from clipboard, keeping current RPM/Load axes."""
+        if self.base_ve_map is None:
+            QMessageBox.warning(self, "No Map", "Please load a base map first.")
+            return
+
         clipboard = QApplication.clipboard()
         text = clipboard.text()
 
@@ -1403,50 +1847,27 @@ class VEMapDialog(QDialog):
                 QMessageBox.warning(self, "Parse Error", "Could not parse clipboard data.")
                 return
 
-            # Detect if first row contains RPM headers (numbers, generally increasing)
-            has_rpm_header = self._detect_rpm_header(rows_data[0])
+            # For "Paste VE Only", treat all data as VE values - no header detection
+            # User explicitly wants just the values, not axes
+            ve_data = [self._parse_numeric_row(row) for row in rows_data]
 
-            # Detect if first column contains load headers (numbers in first column)
-            has_load_header = self._detect_load_header(rows_data, has_rpm_header)
-
-            # Extract axes and data based on detection
-            if has_rpm_header and has_load_header:
-                # Full headers: first row is RPM, first column is load
-                # First cell might be a label like "TPS" or empty
-                rpm_axis = self._parse_numeric_row(rows_data[0][1:])
-                load_axis = []
-                ve_data = []
-                for row in rows_data[1:]:
-                    if row:
-                        load_axis.append(self._parse_numeric_value(row[0]))
-                        ve_data.append(self._parse_numeric_row(row[1:]))
-            elif has_rpm_header:
-                # Only RPM header, no load header
-                rpm_axis = self._parse_numeric_row(rows_data[0])
-                load_axis = self._generate_default_load_axis(len(rows_data) - 1)
-                ve_data = [self._parse_numeric_row(row) for row in rows_data[1:]]
-            elif has_load_header:
-                # Only load header, no RPM header
-                load_axis = []
-                ve_data = []
-                for row in rows_data:
-                    if row:
-                        load_axis.append(self._parse_numeric_value(row[0]))
-                        ve_data.append(self._parse_numeric_row(row[1:]))
-                rpm_axis = self._generate_default_rpm_axis(len(ve_data[0]) if ve_data else 0)
-            else:
-                # No headers - just data values
-                rpm_axis = self._generate_default_rpm_axis(len(rows_data[0]) if rows_data else 0)
-                load_axis = self._generate_default_load_axis(len(rows_data))
-                ve_data = [self._parse_numeric_row(row) for row in rows_data]
-
-            # Validate dimensions
             if not ve_data or not ve_data[0]:
                 QMessageBox.warning(self, "Parse Error", "No valid data found in clipboard.")
                 return
 
             n_rows = len(ve_data)
             n_cols = len(ve_data[0])
+
+            # Check dimensions match current map
+            current_rows, current_cols = self.base_ve_map.shape
+
+            if n_rows != current_rows or n_cols != current_cols:
+                QMessageBox.warning(
+                    self, "Size Mismatch",
+                    f"Clipboard data is {n_rows}x{n_cols}, but current map is {current_rows}x{current_cols}.\n\n"
+                    f"Use 'Paste from Clipboard' to replace the entire map including axes."
+                )
+                return
 
             # Ensure all rows have same number of columns
             for i, row in enumerate(ve_data):
@@ -1457,44 +1878,26 @@ class VEMapDialog(QDialog):
                     )
                     return
 
-            # Validate axis lengths
-            if len(rpm_axis) != n_cols:
-                rpm_axis = self._generate_default_rpm_axis(n_cols)
-            if len(load_axis) != n_rows:
-                load_axis = self._generate_default_load_axis(n_rows)
-
-            # Convert to numpy array
+            # Update only the VE values, keep axes
             self.base_ve_map = np.array(ve_data, dtype=np.float64)
-            self.rpm_axis = rpm_axis
-            self.load_axis = load_axis
-            self.load_type = "TPS"  # Default
 
-            # Reset correction data
+            # Clear calculated data since base map changed
             self.corrected_ve_map = None
             self.hit_count_map = None
             self.error_map = None
             self.correction_map = None
             self.extrapolated_mask = None
+            self.ve_model = None
 
-            # Update UI
-            self._setup_map_table()
+            # Update display
             self._update_map_display()
             self._update_statistics()
+            self._update_legend()
 
-            header_info = []
-            if has_rpm_header:
-                header_info.append("RPM headers")
-            if has_load_header:
-                header_info.append("Load headers")
-
-            status_msg = f"Pasted {n_rows}x{n_cols} map"
-            if header_info:
-                status_msg += f" (detected: {', '.join(header_info)})"
-
-            self.status_label.setText(status_msg)
+            self.status_label.setText(f"Pasted {n_rows}x{n_cols} VE values (axes unchanged)")
             self.status_label.setStyleSheet("color: #4ec9b0;")
             self.calculate_btn.setEnabled(self.log_manager.get_main_log() is not None)
-            self.save_map_btn.setEnabled(False)
+            self.save_map_btn.setEnabled(True)
 
         except Exception as e:
             QMessageBox.critical(
@@ -2121,11 +2524,12 @@ class VEMapDialog(QDialog):
                 f"Data Points: {stats.n_points}"
             )
         else:
-            QMessageBox.warning(
-                self, "Fit Failed",
-                "Model fitting failed or produced poor results.\n"
-                "Try adjusting engine parameters or getting more data."
-            )
+            error_msg = "Model fitting failed or produced poor results.\n"
+            if stats.error_message:
+                error_msg += f"\nError: {stats.error_message}"
+            else:
+                error_msg += "Try adjusting engine parameters or getting more data."
+            QMessageBox.warning(self, "Fit Failed", error_msg)
 
     def _fill_empty_cells(self):
         """Fill empty cells using the fitted model."""

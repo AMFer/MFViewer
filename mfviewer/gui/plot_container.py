@@ -51,8 +51,12 @@ class ContainerCursorOverlay(QWidget):
 
         painter.end()
 
-    def _draw_cursor_for_plot(self, painter: QPainter, plot_widget: PlotWidget):
-        """Draw cursor line for a single plot."""
+    def _draw_cursor_for_plot(self, painter: QPainter, plot_widget: Union[PlotWidget, XYPlotWidget]):
+        """Draw cursor line for a single plot (time-series plots only)."""
+        # Skip XY plots - they handle their own crosshairs via set_cursor_position
+        if isinstance(plot_widget, XYPlotWidget):
+            return
+
         # Get the inner pg.PlotWidget
         pg_widget = plot_widget.plot_widget
 
@@ -223,6 +227,12 @@ class PlotContainer(QWidget):
         # Set container reference for context menu access
         xy_widget.container = self
 
+        # Set cursor callback for synchronization (XY plots show crosshairs)
+        if hasattr(self, '_global_cursor_sync'):
+            xy_widget.cursor_callback = self._global_cursor_sync
+        else:
+            xy_widget.cursor_callback = self._on_cursor_moved
+
         self.plot_widgets.append(xy_widget)
         self.splitter.addWidget(xy_widget)
 
@@ -251,6 +261,12 @@ class PlotContainer(QWidget):
 
         xy_widget.remove_callback = self._remove_plot
         xy_widget.container = self
+
+        # Set cursor callback for synchronization (XY plots show crosshairs)
+        if hasattr(self, '_global_cursor_sync'):
+            xy_widget.cursor_callback = self._global_cursor_sync
+        else:
+            xy_widget.cursor_callback = self._on_cursor_moved
 
         # Replace in list
         self.plot_widgets[index] = xy_widget

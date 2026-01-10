@@ -35,6 +35,7 @@ class UnitsManager:
             'Time_us': 'μs',
             'Time_ms': 'ms',
             'Current': 'A',  # Current in Amps (raw values are mA, need /1000)
+            'Current_mA_as_A': 'A',  # Current in Amps (raw values are mA, need /1000)
             'Raw': 'raw',
             # Add more mappings as needed
         }

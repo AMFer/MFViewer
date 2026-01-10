@@ -4,6 +4,7 @@ PyQt6>=6.6.0
 # Data Processing - Core
 pandas>=2.0.0
 numpy>=1.24.0
+scipy>=1.11.0  # For engine model curve fitting
 
 # Data Processing - Performance (optional but recommended)
 polars>=0.20.0  # 10-100x faster CSV loading than pandas
