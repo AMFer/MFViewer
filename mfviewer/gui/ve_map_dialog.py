@@ -109,6 +109,7 @@ class VEMapDialog(QDialog):
         self._last_load_dir: Optional[Path] = None
         self._last_save_dir: Optional[Path] = None
         self._last_ve_map_path: Optional[Path] = None  # Last loaded VE map file
+        self._last_target_map_path: Optional[Path] = None  # Last loaded target AFR map file
 
         # Channel names discovered from logs
         self.available_channels: List[str] = []
@@ -159,6 +160,12 @@ class VEMapDialog(QDialog):
                     if not self._last_ve_map_path.exists():
                         self._last_ve_map_path = None
 
+                # Load last target AFR map path
+                if settings.get('last_target_map_path'):
+                    self._last_target_map_path = Path(settings['last_target_map_path'])
+                    if not self._last_target_map_path.exists():
+                        self._last_target_map_path = None
+
                 # Load last engine config (handled separately in _load_engine_configs)
             except (json.JSONDecodeError, IOError):
                 pass  # Use defaults if file is corrupted
@@ -179,6 +186,9 @@ class VEMapDialog(QDialog):
         # Save last VE map path
         if self._last_ve_map_path:
             settings['last_ve_map_path'] = str(self._last_ve_map_path)
+        # Save last target AFR map path
+        if self._last_target_map_path:
+            settings['last_target_map_path'] = str(self._last_target_map_path)
         # Save last engine config
         current_engine = self.engine_combo.currentText()
         if current_engine and current_engine != "-- Select Engine --":
@@ -287,9 +297,20 @@ class VEMapDialog(QDialog):
         self.load_target_btn.clicked.connect(self._load_target_map_dialog)
         target_toolbar.addWidget(self.load_target_btn)
 
+        self.save_target_btn = QPushButton("Save Target Map...")
+        self.save_target_btn.clicked.connect(self._save_target_map_dialog)
+        self.save_target_btn.setEnabled(False)
+        target_toolbar.addWidget(self.save_target_btn)
+
         self.paste_target_btn = QPushButton("Paste from Clipboard")
         self.paste_target_btn.clicked.connect(self._paste_target_from_clipboard)
         target_toolbar.addWidget(self.paste_target_btn)
+
+        self.paste_target_values_btn = QPushButton("Paste Values Only")
+        self.paste_target_values_btn.clicked.connect(self._paste_target_values_only)
+        self.paste_target_values_btn.setEnabled(False)
+        self.paste_target_values_btn.setToolTip("Paste only the cell values without changing axes")
+        target_toolbar.addWidget(self.paste_target_values_btn)
 
         self.copy_target_btn = QPushButton("Copy to Clipboard")
         self.copy_target_btn.clicked.connect(self._copy_target_to_clipboard)
@@ -311,6 +332,13 @@ class VEMapDialog(QDialog):
         self.target_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.target_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.target_table.cellClicked.connect(self._on_target_cell_clicked)
+
+        # Enable context menus for target table headers
+        self.target_table.horizontalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.target_table.horizontalHeader().customContextMenuRequested.connect(self._show_target_column_context_menu)
+        self.target_table.verticalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.target_table.verticalHeader().customContextMenuRequested.connect(self._show_target_row_context_menu)
+
         target_tab_layout.addWidget(self.target_table)
 
         # Cell info label for target table
@@ -550,6 +578,10 @@ class VEMapDialog(QDialog):
             default_path = self.ve_map_manager.get_default_map_path()
             if default_path.exists():
                 self._load_map(default_path)
+
+        # Try to load last used target AFR map
+        if self._last_target_map_path and self._last_target_map_path.exists():
+            self._load_target_map(self._last_target_map_path)
 
     def _load_map_dialog(self):
         """Show file dialog to load a base map."""
@@ -2036,6 +2068,10 @@ class VEMapDialog(QDialog):
             self.target_rpm_axis = rpm_axis
             self.target_load_axis = load_axis
 
+            # Save path for persistence
+            self._last_target_map_path = file_path
+            self._save_settings()
+
             # Update table display
             self._setup_target_table()
             self._update_target_display()
@@ -2043,6 +2079,8 @@ class VEMapDialog(QDialog):
             self.target_cell_info_label.setText(f"Loaded: {file_path.name}")
             self.target_cell_info_label.setStyleSheet("color: #4ec9b0; padding: 4px;")
             self.copy_target_btn.setEnabled(True)
+            self.save_target_btn.setEnabled(True)
+            self.paste_target_values_btn.setEnabled(True)
 
         except Exception as e:
             QMessageBox.critical(
@@ -2141,12 +2179,331 @@ class VEMapDialog(QDialog):
             self.target_cell_info_label.setText(f"Pasted {n_rows}x{n_cols} target map")
             self.target_cell_info_label.setStyleSheet("color: #4ec9b0; padding: 4px;")
             self.copy_target_btn.setEnabled(True)
+            self.save_target_btn.setEnabled(True)
+            self.paste_target_values_btn.setEnabled(True)
 
         except Exception as e:
             QMessageBox.critical(
                 self, "Paste Error",
                 f"Failed to parse clipboard data:\n{e}"
             )
+
+    def _paste_target_values_only(self):
+        """Paste only the cell values from clipboard without changing axes."""
+        if self.target_afr_map is None:
+            QMessageBox.warning(self, "No Map", "Please load a target map first.")
+            return
+
+        clipboard = QApplication.clipboard()
+        text = clipboard.text()
+
+        if not text.strip():
+            QMessageBox.warning(self, "Empty Clipboard", "No data found in clipboard.")
+            return
+
+        try:
+            # Parse clipboard text
+            lines = text.strip().split('\n')
+            rows_data = []
+
+            for line in lines:
+                if '\t' in line:
+                    cells = line.split('\t')
+                else:
+                    cells = line.split(',')
+                cells = [c.strip() for c in cells]
+                if cells:
+                    rows_data.append(cells)
+
+            if not rows_data:
+                QMessageBox.warning(self, "Parse Error", "Could not parse clipboard data.")
+                return
+
+            # Parse all data as values (no header detection)
+            target_data = [self._parse_numeric_row(row) for row in rows_data]
+
+            if not target_data or not target_data[0]:
+                QMessageBox.warning(self, "Parse Error", "No valid data found in clipboard.")
+                return
+
+            n_rows = len(target_data)
+            n_cols = len(target_data[0])
+            current_rows, current_cols = self.target_afr_map.shape
+
+            # Check dimensions match
+            if n_rows != current_rows or n_cols != current_cols:
+                QMessageBox.warning(
+                    self, "Size Mismatch",
+                    f"Clipboard data is {n_rows}x{n_cols}, but map is {current_rows}x{current_cols}.\n"
+                    "Use 'Paste from Clipboard' to load a new map with different dimensions."
+                )
+                return
+
+            # Validate row lengths
+            for i, row in enumerate(target_data):
+                if len(row) != n_cols:
+                    QMessageBox.warning(
+                        self, "Parse Error",
+                        f"Row {i+1} has {len(row)} columns, expected {n_cols}."
+                    )
+                    return
+
+            # Update only the values, keep existing axes
+            self.target_afr_map = np.array(target_data, dtype=np.float64)
+
+            # Refresh display
+            self._update_target_display()
+
+            self.target_cell_info_label.setText(f"Pasted values to {n_rows}x{n_cols} target map")
+            self.target_cell_info_label.setStyleSheet("color: #4ec9b0; padding: 4px;")
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Paste Error",
+                f"Failed to parse clipboard data:\n{e}"
+            )
+
+    def _save_target_map_dialog(self):
+        """Show file dialog to save the target AFR/Lambda map."""
+        if self.target_afr_map is None:
+            QMessageBox.warning(self, "No Data", "No target map to save. Load a map first.")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Target AFR/Lambda Map",
+            "",
+            "CSV Files (*.csv);;All Files (*)"
+        )
+
+        if file_path:
+            self._save_target_map(file_path)
+
+    def _save_target_map(self, file_path: str):
+        """Save the target AFR/Lambda map to a CSV file."""
+        try:
+            with open(file_path, 'w', newline='') as f:
+                import csv
+                writer = csv.writer(f)
+
+                # Write RPM header row
+                header_row = ['Load\\RPM'] + [str(int(rpm)) for rpm in self.target_rpm_axis]
+                writer.writerow(header_row)
+
+                # Write data rows with load headers
+                rows, cols = self.target_afr_map.shape
+                for row in range(rows):
+                    load_val = self.target_load_axis[row] if row < len(self.target_load_axis) else 0
+                    row_data = [f"{load_val:.0f}"]
+                    for col in range(cols):
+                        row_data.append(f"{self.target_afr_map[row, col]:.3f}")
+                    writer.writerow(row_data)
+
+            # Save path for persistence
+            self._last_target_map_path = Path(file_path)
+            self._save_settings()
+
+            self.target_cell_info_label.setText(f"Saved to {Path(file_path).name}")
+            self.target_cell_info_label.setStyleSheet("color: #4ec9b0; padding: 4px;")
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Save Error",
+                f"Failed to save target map:\n{e}"
+            )
+
+    def _show_target_column_context_menu(self, position):
+        """Show context menu for target table column header."""
+        if self.target_afr_map is None:
+            return
+
+        col = self.target_table.horizontalHeader().logicalIndexAt(position)
+        if col < 0:
+            return
+
+        menu = QMenu(self)
+
+        insert_before_action = QAction(f"Insert Column Before", self)
+        insert_before_action.triggered.connect(lambda: self._insert_target_column(col, before=True))
+        menu.addAction(insert_before_action)
+
+        insert_after_action = QAction(f"Insert Column After", self)
+        insert_after_action.triggered.connect(lambda: self._insert_target_column(col, before=False))
+        menu.addAction(insert_after_action)
+
+        menu.addSeparator()
+
+        delete_action = QAction(f"Delete Column", self)
+        delete_action.triggered.connect(lambda: self._delete_target_column(col))
+        menu.addAction(delete_action)
+
+        menu.exec(self.target_table.horizontalHeader().mapToGlobal(position))
+
+    def _show_target_row_context_menu(self, position):
+        """Show context menu for target table row header."""
+        if self.target_afr_map is None:
+            return
+
+        row = self.target_table.verticalHeader().logicalIndexAt(position)
+        if row < 0:
+            return
+
+        menu = QMenu(self)
+
+        insert_before_action = QAction(f"Insert Row Before", self)
+        insert_before_action.triggered.connect(lambda: self._insert_target_row(row, before=True))
+        menu.addAction(insert_before_action)
+
+        insert_after_action = QAction(f"Insert Row After", self)
+        insert_after_action.triggered.connect(lambda: self._insert_target_row(row, before=False))
+        menu.addAction(insert_after_action)
+
+        menu.addSeparator()
+
+        delete_action = QAction(f"Delete Row", self)
+        delete_action.triggered.connect(lambda: self._delete_target_row(row))
+        menu.addAction(delete_action)
+
+        menu.exec(self.target_table.verticalHeader().mapToGlobal(position))
+
+    def _insert_target_column(self, col: int, before: bool = True):
+        """Insert a new column in the target map."""
+        if self.target_afr_map is None:
+            return
+
+        insert_pos = col if before else col + 1
+        n_cols = self.target_afr_map.shape[1]
+
+        # Calculate new RPM value by interpolation
+        if insert_pos == 0:
+            if n_cols > 1:
+                new_rpm = self.target_rpm_axis[0] - (self.target_rpm_axis[1] - self.target_rpm_axis[0])
+            else:
+                new_rpm = self.target_rpm_axis[0] - 500
+        elif insert_pos >= n_cols:
+            if n_cols > 1:
+                new_rpm = self.target_rpm_axis[-1] + (self.target_rpm_axis[-1] - self.target_rpm_axis[-2])
+            else:
+                new_rpm = self.target_rpm_axis[-1] + 500
+        else:
+            new_rpm = (self.target_rpm_axis[insert_pos - 1] + self.target_rpm_axis[insert_pos]) / 2
+
+        # Calculate new column values by interpolation
+        if insert_pos == 0:
+            new_values = self.target_afr_map[:, 0]
+        elif insert_pos >= n_cols:
+            new_values = self.target_afr_map[:, -1]
+        else:
+            new_values = (self.target_afr_map[:, insert_pos - 1] + self.target_afr_map[:, insert_pos]) / 2
+
+        # Insert into arrays
+        self.target_rpm_axis.insert(insert_pos, new_rpm)
+        self.target_afr_map = np.insert(self.target_afr_map, insert_pos, new_values, axis=1)
+
+        # Rebuild table
+        self._setup_target_table()
+        self._update_target_display()
+
+    def _insert_target_row(self, row: int, before: bool = True):
+        """Insert a new row in the target map."""
+        if self.target_afr_map is None:
+            return
+
+        insert_pos = row if before else row + 1
+        n_rows = self.target_afr_map.shape[0]
+
+        # Calculate new load value by interpolation
+        if insert_pos == 0:
+            if n_rows > 1:
+                new_load = self.target_load_axis[0] + (self.target_load_axis[0] - self.target_load_axis[1])
+            else:
+                new_load = self.target_load_axis[0] + 10
+        elif insert_pos >= n_rows:
+            if n_rows > 1:
+                new_load = self.target_load_axis[-1] - (self.target_load_axis[-2] - self.target_load_axis[-1])
+            else:
+                new_load = self.target_load_axis[-1] - 10
+        else:
+            new_load = (self.target_load_axis[insert_pos - 1] + self.target_load_axis[insert_pos]) / 2
+
+        # Calculate new row values by interpolation
+        if insert_pos == 0:
+            new_values = self.target_afr_map[0, :]
+        elif insert_pos >= n_rows:
+            new_values = self.target_afr_map[-1, :]
+        else:
+            new_values = (self.target_afr_map[insert_pos - 1, :] + self.target_afr_map[insert_pos, :]) / 2
+
+        # Insert into arrays
+        self.target_load_axis.insert(insert_pos, new_load)
+        self.target_afr_map = np.insert(self.target_afr_map, insert_pos, new_values, axis=0)
+
+        # Rebuild table
+        self._setup_target_table()
+        self._update_target_display()
+
+    def _delete_target_column(self, col: int):
+        """Delete a column from the target map."""
+        if self.target_afr_map is None:
+            return
+
+        if self.target_afr_map.shape[1] <= 1:
+            QMessageBox.warning(self, "Cannot Delete", "Cannot delete the last column.")
+            return
+
+        rpm_value = self.target_rpm_axis[col] if col < len(self.target_rpm_axis) else 0
+
+        reply = QMessageBox.question(
+            self,
+            "Delete Column",
+            f"Delete column at {int(rpm_value)} RPM?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Remove from arrays
+        if col < len(self.target_rpm_axis):
+            self.target_rpm_axis.pop(col)
+        self.target_afr_map = np.delete(self.target_afr_map, col, axis=1)
+
+        # Rebuild table
+        self._setup_target_table()
+        self._update_target_display()
+
+    def _delete_target_row(self, row: int):
+        """Delete a row from the target map."""
+        if self.target_afr_map is None:
+            return
+
+        if self.target_afr_map.shape[0] <= 1:
+            QMessageBox.warning(self, "Cannot Delete", "Cannot delete the last row.")
+            return
+
+        load_value = self.target_load_axis[row] if row < len(self.target_load_axis) else 0
+
+        reply = QMessageBox.question(
+            self,
+            "Delete Row",
+            f"Delete row at {load_value:.0f}%?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Remove from arrays
+        if row < len(self.target_load_axis):
+            self.target_load_axis.pop(row)
+        self.target_afr_map = np.delete(self.target_afr_map, row, axis=0)
+
+        # Rebuild table
+        self._setup_target_table()
+        self._update_target_display()
 
     def _copy_target_to_clipboard(self):
         """Copy the target AFR/Lambda map to clipboard."""

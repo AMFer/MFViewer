@@ -304,20 +304,6 @@ class AlphaNModel:
         # Normalize weights by hit count
         weights = weights / np.max(weights)
 
-        # For test stand data (idle, no load), high-TPS readings are unreliable
-        # because the engine isn't actually producing WOT power - it's just idle
-        # with the throttle open. We should only fit to data where TPS < 60%,
-        # which is more representative of actual engine behavior during testing.
-        # The model will use the peak_ve_estimate to anchor WOT predictions.
-        low_tps_mask = tps_values < 60.0
-
-        if np.any(low_tps_mask) and np.sum(low_tps_mask) >= 5:
-            # Filter to only low-TPS data for fitting
-            rpm_values = rpm_values[low_tps_mask]
-            tps_values = tps_values[low_tps_mask]
-            ve_values = ve_values[low_tps_mask]
-            weights = weights[low_tps_mask]
-
         # Target peak VE from config - this is what we want at peak_torque_rpm, 100% TPS
         target_peak_ve = self.config.peak_ve_estimate
 
